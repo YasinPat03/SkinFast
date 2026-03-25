@@ -1,6 +1,10 @@
 import { getDb, initDb } from '@/lib/db';
+import { getTradeupEligibility } from '@/lib/tradeup';
+import { isPriceStale } from '@/lib/prices';
 import { notFound } from 'next/navigation';
 import SearchBar from '@/components/SearchBar';
+import TradeupResults from '@/components/TradeupResults';
+import PriceRefreshButton from '@/components/PriceRefreshButton';
 
 const RARITY_COLORS: Record<string, string> = {
   rarity_common_weapon: '#b0c3d9',
@@ -113,6 +117,12 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
 
   const rarityColor = RARITY_COLORS[skin.rarity_id] ?? '#888';
 
+  // Check if any prices are stale (>6 hours old)
+  const hasStalePrice = variants.some((v) => isPriceStale(v.updated_at, 6));
+  const staleMarketHashNames = variants
+    .filter((v) => isPriceStale(v.updated_at, 6))
+    .map((v) => v.market_hash_name);
+
   return (
     <div className="flex flex-col flex-1 items-center px-4 py-8 gap-8">
       <SearchBar />
@@ -140,6 +150,10 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
                 Prices updated: {timeAgo(oldestUpdate)}
               </p>
             )}
+            <PriceRefreshButton
+              marketHashNames={staleMarketHashNames}
+              isStale={hasStalePrice}
+            />
           </div>
         </div>
 
@@ -221,6 +235,9 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
             </div>
           </div>
         )}
+
+        {/* Tradeup Section */}
+        <TradeupSection skinId={id} skin={skin} variants={variants} />
       </div>
     </div>
   );
@@ -238,6 +255,104 @@ function PriceCell({ variant }: { variant: VariantRow }) {
         <div className="text-xs text-zinc-500 mt-0.5">
           {variant.sell_listings != null && `${variant.sell_listings} listed`}
           {variant.volume != null && ` / ${variant.volume} sold`}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TradeupSection({ skinId, skin, variants }: { skinId: string; skin: SkinRow; variants: VariantRow[] }) {
+  const tradeup = getTradeupEligibility(skinId);
+
+  // Get available wears for the non-stattrak, non-souvenir variants
+  const availableWears = [...new Set(
+    variants
+      .filter((v) => !v.is_stattrak && !v.is_souvenir)
+      .map((v) => v.wear_name)
+  )];
+
+  return (
+    <div className="mt-8 border-t border-zinc-700 pt-8">
+      <h2 className="text-lg font-semibold text-white mb-4">Tradeup Contract</h2>
+
+      {!tradeup.eligible ? (
+        <div className="text-zinc-400 text-sm bg-zinc-800/50 rounded-lg px-4 py-3 border border-zinc-700">
+          {tradeup.reason}
+        </div>
+      ) : (
+        <div>
+          {/* Eligibility info */}
+          <div className="flex flex-wrap gap-4 text-sm mb-4">
+            <div className="bg-zinc-800/50 rounded px-3 py-2 border border-zinc-700">
+              <span className="text-zinc-500">Input rarity: </span>
+              <span className="text-white">{tradeup.input_rarity_name}</span>
+            </div>
+            <div className="bg-zinc-800/50 rounded px-3 py-2 border border-zinc-700">
+              <span className="text-zinc-500">Inputs required: </span>
+              <span className="text-white">{tradeup.num_inputs_required}</span>
+            </div>
+            <div className="bg-zinc-800/50 rounded px-3 py-2 border border-zinc-700">
+              <span className="text-zinc-500">Collections: </span>
+              <span className="text-white">{tradeup.collections?.length ?? 0}</span>
+            </div>
+          </div>
+
+          {/* Input skins per collection (collapsed summary) */}
+          {tradeup.collections && tradeup.collections.length > 0 && (
+            <div className="mb-6 space-y-3">
+              {tradeup.collections.map((col) => (
+                <details key={col.id} className="bg-zinc-800/30 rounded-lg border border-zinc-700">
+                  <summary className="px-4 py-2.5 cursor-pointer text-sm text-zinc-300 hover:text-white transition-colors">
+                    {col.name}
+                    <span className="text-zinc-500 ml-2">
+                      ({col.input_skins.length} inputs, {col.output_skins.length} outputs)
+                    </span>
+                  </summary>
+                  <div className="px-4 pb-3 border-t border-zinc-700/50">
+                    <div className="mt-2">
+                      <span className="text-xs uppercase tracking-wider text-zinc-500">Input skins ({tradeup.input_rarity_name})</span>
+                      <div className="mt-1.5 space-y-1">
+                        {col.input_skins.map((s) => (
+                          <div key={s.id} className="flex items-center gap-2 text-sm">
+                            {s.image_url && <img src={s.image_url} alt={s.name} className="w-10 h-7 object-contain" />}
+                            <span className="text-zinc-300">{s.name}</span>
+                            <span className="text-zinc-500 ml-auto">
+                              {s.cheapest_price_cents != null ? formatPrice(s.cheapest_price_cents) : 'No price'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mt-3">
+                      <span className="text-xs uppercase tracking-wider text-zinc-500">Possible outputs ({skin.rarity_name})</span>
+                      <div className="mt-1.5 space-y-1">
+                        {col.output_skins.map((s) => (
+                          <div key={s.id} className="flex items-center gap-2 text-sm">
+                            {s.image_url && <img src={s.image_url} alt={s.name} className="w-10 h-7 object-contain" />}
+                            <span className={s.id === skinId ? 'text-green-400 font-medium' : 'text-zinc-300'}>
+                              {s.name}
+                              {s.id === skinId && ' (target)'}
+                            </span>
+                            <span className="text-zinc-500 ml-auto">
+                              {s.cheapest_price_cents != null ? formatPrice(s.cheapest_price_cents) : 'No price'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </details>
+              ))}
+            </div>
+          )}
+
+          {/* Best tradeup finder */}
+          <TradeupResults
+            skinId={skinId}
+            skinName={skin.name}
+            hasStatTrak={skin.has_stattrak === 1}
+            availableWears={availableWears}
+          />
         </div>
       )}
     </div>

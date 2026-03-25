@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb, initDb } from '@/lib/db';
+import { getTradeupEligibility } from '@/lib/tradeup';
 
 export async function GET(
   request: NextRequest,
@@ -45,5 +46,8 @@ export async function GET(
     WHERE cs.skin_id = ?
   `).all(id);
 
-  return NextResponse.json({ skin, variants, collections });
+  // Get tradeup eligibility info
+  const tradeup = getTradeupEligibility(id);
+
+  return NextResponse.json({ skin, variants, collections, tradeup });
 }
