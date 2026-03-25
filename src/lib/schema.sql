@@ -42,6 +42,24 @@ CREATE TABLE IF NOT EXISTS collection_skins (
   FOREIGN KEY (skin_id) REFERENCES skins(id)
 );
 
+-- Crate (case) metadata
+CREATE TABLE IF NOT EXISTS crates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  image_url TEXT
+);
+
+-- Junction table: skins <-> crates with rarity context and rare flag
+CREATE TABLE IF NOT EXISTS crate_skins (
+  crate_id TEXT NOT NULL,
+  skin_id TEXT NOT NULL,
+  rarity_id TEXT NOT NULL,
+  is_rare INTEGER NOT NULL DEFAULT 0,  -- 1 = from contains_rare (knives/gloves)
+  PRIMARY KEY (crate_id, skin_id),
+  FOREIGN KEY (crate_id) REFERENCES crates(id),
+  FOREIGN KEY (skin_id) REFERENCES skins(id)
+);
+
 -- Cached Steam market prices
 CREATE TABLE IF NOT EXISTS prices (
   market_hash_name TEXT PRIMARY KEY,
@@ -65,3 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_skin_variants_market_hash_name ON skin_variants(m
 CREATE INDEX IF NOT EXISTS idx_collection_skins_collection_id ON collection_skins(collection_id);
 CREATE INDEX IF NOT EXISTS idx_collection_skins_rarity_id ON collection_skins(rarity_id);
 CREATE INDEX IF NOT EXISTS idx_collection_skins_skin_id ON collection_skins(skin_id);
+CREATE INDEX IF NOT EXISTS idx_crate_skins_crate_id ON crate_skins(crate_id);
+CREATE INDEX IF NOT EXISTS idx_crate_skins_skin_id ON crate_skins(skin_id);
+CREATE INDEX IF NOT EXISTS idx_crate_skins_rarity_id ON crate_skins(rarity_id);
+CREATE INDEX IF NOT EXISTS idx_crate_skins_is_rare ON crate_skins(is_rare);

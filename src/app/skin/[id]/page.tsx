@@ -93,6 +93,13 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
     WHERE cs.skin_id = ?
   `).all(id) as CollectionRow[];
 
+  const crates = db.prepare(`
+    SELECT cr.id, cr.name, cr.image_url
+    FROM crates cr
+    JOIN crate_skins cs ON cr.id = cs.crate_id
+    WHERE cs.skin_id = ?
+  `).all(id) as CollectionRow[];
+
   // Group variants by type: normal, stattrak, souvenir
   const variantTypes = {
     normal: variants.filter((v) => !v.is_stattrak && !v.is_souvenir),
@@ -236,6 +243,26 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
           </div>
         )}
 
+        {/* Cases */}
+        {crates.length > 0 && (
+          <div className="mt-6">
+            <h2 className="text-lg font-semibold text-white mb-3">Found in {crates.length} case{crates.length !== 1 ? 's' : ''}</h2>
+            <div className="flex flex-wrap gap-3">
+              {crates.map((crate) => (
+                <div
+                  key={crate.id}
+                  className="flex items-center gap-2 px-3 py-2 bg-zinc-800 rounded-lg border border-zinc-700"
+                >
+                  {crate.image_url && (
+                    <img src={crate.image_url} alt={crate.name} className="w-8 h-8 object-contain" />
+                  )}
+                  <span className="text-sm text-zinc-300">{crate.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Tradeup Section */}
         <TradeupSection skinId={id} skin={skin} variants={variants} />
       </div>
@@ -292,7 +319,7 @@ function TradeupSection({ skinId, skin, variants }: { skinId: string; skin: Skin
               <span className="text-white">{tradeup.num_inputs_required}</span>
             </div>
             <div className="bg-zinc-800/50 rounded px-3 py-2 border border-zinc-700">
-              <span className="text-zinc-500">Collections: </span>
+              <span className="text-zinc-500">{tradeup.input_type === 'gold' ? 'Cases' : 'Collections'}: </span>
               <span className="text-white">{tradeup.collections?.length ?? 0}</span>
             </div>
           </div>

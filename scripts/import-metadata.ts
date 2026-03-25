@@ -44,6 +44,26 @@ interface RawCollection {
   }[];
 }
 
+interface RawCrate {
+  id: string;
+  name: string;
+  image: string;
+  contains: {
+    id: string;
+    name: string;
+    rarity: { id: string; name: string; color: string };
+    paint_index: string;
+    image: string;
+  }[];
+  contains_rare: {
+    id: string;
+    name: string;
+    rarity: { id: string; name: string; color: string };
+    paint_index: string;
+    image: string;
+  }[];
+}
+
 async function fetchJson<T>(file: string): Promise<T> {
   const url = `${BASE_URL}/${file}`;
   console.log(`Fetching ${url}...`);
@@ -70,19 +90,22 @@ async function main() {
   console.log('=== CS2 Metadata Import ===\n');
 
   // Fetch all data in parallel
-  const [skins, skinsNotGrouped, collections] = await Promise.all([
+  const [skins, skinsNotGrouped, collections, crates] = await Promise.all([
     fetchJson<RawSkin[]>('skins.json'),
     fetchJson<RawSkinNotGrouped[]>('skins_not_grouped.json'),
     fetchJson<RawCollection[]>('collections.json'),
+    fetchJson<RawCrate[]>('crates.json'),
   ]);
 
-  console.log(`\nFetched: ${skins.length} skins, ${skinsNotGrouped.length} variants, ${collections.length} collections\n`);
+  console.log(`\nFetched: ${skins.length} skins, ${skinsNotGrouped.length} variants, ${collections.length} collections, ${crates.length} crates\n`);
 
   // Initialize database
   initDb();
   const db = getDb();
 
   // Clear existing data for clean import
+  db.exec('DELETE FROM crate_skins');
+  db.exec('DELETE FROM crates');
   db.exec('DELETE FROM collection_skins');
   db.exec('DELETE FROM skin_variants');
   db.exec('DELETE FROM skins');
@@ -153,6 +176,55 @@ async function main() {
   const totalCollectionSkins = collections.reduce((sum, c) => sum + c.contains.length, 0);
   console.log(`  Inserted ${collections.length} collections with ${totalCollectionSkins} collection-skin links`);
 
+  // --- Import crates ---
+  console.log('Importing crates...');
+  const insertCrate = db.prepare(`
+    INSERT OR REPLACE INTO crates (id, name, image_url)
+    VALUES (?, ?, ?)
+  `);
+
+  const insertCrateSkin = db.prepare(`
+    INSERT OR REPLACE INTO crate_skins (crate_id, skin_id, rarity_id, is_rare)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  let crateSkinsCount = 0;
+  const insertCratesBatch = db.transaction((items: RawCrate[]) => {
+    for (const crate of items) {
+      insertCrate.run(crate.id, crate.name, crate.image);
+
+      // Regular skins in the crate (contains)
+      if (crate.contains) {
+        for (const skin of crate.contains) {
+          if (!validSkinIds.has(skin.id)) continue;
+          insertCrateSkin.run(
+            crate.id,
+            skin.id,
+            normalizeRarityId(skin.rarity.id),
+            0,
+          );
+          crateSkinsCount++;
+        }
+      }
+
+      // Rare skins in the crate (contains_rare) - knives/gloves
+      if (crate.contains_rare) {
+        for (const skin of crate.contains_rare) {
+          if (!validSkinIds.has(skin.id)) continue;
+          insertCrateSkin.run(
+            crate.id,
+            skin.id,
+            normalizeRarityId(skin.rarity.id),
+            1,
+          );
+          crateSkinsCount++;
+        }
+      }
+    }
+  });
+  insertCratesBatch(crates);
+  console.log(`  Inserted ${crates.length} crates with ${crateSkinsCount} crate-skin links`);
+
   // --- Import skin variants ---
   console.log('Importing skin variants...');
   const insertVariant = db.prepare(`
@@ -190,10 +262,16 @@ async function main() {
   const collectionCount = (db.prepare('SELECT COUNT(*) as count FROM collections').get() as { count: number }).count;
   const collectionSkinCount = (db.prepare('SELECT COUNT(*) as count FROM collection_skins').get() as { count: number }).count;
 
+  const crateCount = (db.prepare('SELECT COUNT(*) as count FROM crates').get() as { count: number }).count;
+  const crateSkinCount = (db.prepare('SELECT COUNT(*) as count FROM crate_skins').get() as { count: number }).count;
+  const rareSkinCount = (db.prepare('SELECT COUNT(*) as count FROM crate_skins WHERE is_rare = 1').get() as { count: number }).count;
+
   console.log(`  Skins: ${skinCount}`);
   console.log(`  Skin variants: ${variantCountDb}`);
   console.log(`  Collections: ${collectionCount}`);
   console.log(`  Collection-skin links: ${collectionSkinCount}`);
+  console.log(`  Crates: ${crateCount}`);
+  console.log(`  Crate-skin links: ${crateSkinCount} (${rareSkinCount} rare/knives/gloves)`);
 
   // Spot check: AK-47 skins
   console.log('\n--- Spot check: AK-47 skins ---');

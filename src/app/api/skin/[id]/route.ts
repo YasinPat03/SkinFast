@@ -46,8 +46,16 @@ export async function GET(
     WHERE cs.skin_id = ?
   `).all(id);
 
+  // Fetch crates this skin is found in
+  const crates = db.prepare(`
+    SELECT cr.id, cr.name, cr.image_url, cs.is_rare
+    FROM crates cr
+    JOIN crate_skins cs ON cr.id = cs.crate_id
+    WHERE cs.skin_id = ?
+  `).all(id);
+
   // Get tradeup eligibility info
   const tradeup = getTradeupEligibility(id);
 
-  return NextResponse.json({ skin, variants, collections, tradeup });
+  return NextResponse.json({ skin, variants, collections, crates, tradeup });
 }

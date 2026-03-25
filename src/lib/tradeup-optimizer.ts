@@ -1,6 +1,18 @@
 import { getDb } from './db';
 import { TRADEUP_INPUT_RARITY } from './types';
 
+function isKnifeOrGloveSkin(weaponName: string): boolean {
+  const lower = weaponName.toLowerCase();
+  return lower.includes('knife') || lower.includes('bayonet') || lower.includes('karambit')
+    || lower.includes('gloves') || lower.includes('daggers') || lower.includes('navaja')
+    || lower.includes('stiletto') || lower.includes('talon') || lower.includes('ursus')
+    || lower.includes('nomad') || lower.includes('skeleton') || lower.includes('paracord')
+    || lower.includes('survival') || lower.includes('classic') || lower.includes('kukri')
+    || lower.includes('falchion') || lower.includes('bowie') || lower.includes('huntsman')
+    || lower.includes('butterfly') || lower.includes('flip') || lower.includes('gut')
+    || lower.includes('m9') || lower.includes('shadow');
+}
+
 interface SkinRow {
   id: string;
   name: string;
@@ -94,32 +106,62 @@ export function findBestTradeup(
     WHERE sv.skin_id = ? AND sv.wear_name = ? AND sv.is_stattrak = ?
   `).get(targetSkinId, targetWear, stattrakFilter) as { lowest_price_cents: number } | undefined;
 
+  // Detect knife/glove for gold tradeup
+  const isKnifeOrGlove = isKnifeOrGloveSkin(targetSkin.weapon_name);
+  const numInputsRequired = isKnifeOrGlove ? 5 : 10;
+
   // Get input rarity
-  const inputRarityId = TRADEUP_INPUT_RARITY[targetSkin.rarity_id];
+  const inputRarityId = isKnifeOrGlove ? 'rarity_ancient_weapon' : TRADEUP_INPUT_RARITY[targetSkin.rarity_id];
   if (!inputRarityId) return { error: 'No valid input rarity for this skin' };
 
-  // Get collections that contain the target skin
-  const targetCollections = db.prepare(`
-    SELECT cs.collection_id FROM collection_skins cs WHERE cs.skin_id = ?
-  `).all(targetSkinId) as { collection_id: string }[];
+  // Get collections/crates that contain the target skin
+  let targetCollectionIds: Set<string>;
+  let inputSkinsFromTargetCols: (InputCandidate & { collection_id: string; collection_name: string })[];
 
-  if (targetCollections.length === 0) return { error: 'Skin not in any collection' };
+  if (isKnifeOrGlove) {
+    // Gold tradeup: find crates containing this knife/glove
+    const targetCrates = db.prepare(`
+      SELECT cs.crate_id as collection_id FROM crate_skins cs WHERE cs.skin_id = ? AND cs.is_rare = 1
+    `).all(targetSkinId) as { collection_id: string }[];
 
-  const targetCollectionIds = new Set(targetCollections.map((c) => c.collection_id));
+    if (targetCrates.length === 0) return { error: 'Knife/glove not found in any case' };
+    targetCollectionIds = new Set(targetCrates.map((c) => c.collection_id));
 
-  // Get ALL input-rarity skins from target collections (these can contribute to landing the target)
-  const targetColPlaceholders = [...targetCollectionIds].map(() => '?').join(',');
-  const inputSkinsFromTargetCols = db.prepare(`
-    SELECT DISTINCT s.id as skin_id, s.name as skin_name, s.weapon_name, s.image_url,
-           cs.collection_id,
-           c.name as collection_name
-    FROM skins s
-    JOIN collection_skins cs ON s.id = cs.skin_id
-    JOIN collections c ON cs.collection_id = c.id
-    WHERE cs.collection_id IN (${targetColPlaceholders})
-    AND cs.rarity_id = ?
-    AND s.has_souvenir = 0
-  `).all(...targetCollectionIds, inputRarityId) as (InputCandidate & { collection_id: string; collection_name: string })[];
+    const targetColPlaceholders = [...targetCollectionIds].map(() => '?').join(',');
+    inputSkinsFromTargetCols = db.prepare(`
+      SELECT DISTINCT s.id as skin_id, s.name as skin_name, s.weapon_name, s.image_url,
+             cs.crate_id as collection_id,
+             cr.name as collection_name
+      FROM skins s
+      JOIN crate_skins cs ON s.id = cs.skin_id
+      JOIN crates cr ON cs.crate_id = cr.id
+      WHERE cs.crate_id IN (${targetColPlaceholders})
+      AND cs.rarity_id = ?
+      AND cs.is_rare = 0
+      AND s.has_souvenir = 0
+    `).all(...targetCollectionIds, inputRarityId) as (InputCandidate & { collection_id: string; collection_name: string })[];
+  } else {
+    // Standard tradeup: use collections
+    const targetCollections = db.prepare(`
+      SELECT cs.collection_id FROM collection_skins cs WHERE cs.skin_id = ?
+    `).all(targetSkinId) as { collection_id: string }[];
+
+    if (targetCollections.length === 0) return { error: 'Skin not in any collection' };
+    targetCollectionIds = new Set(targetCollections.map((c) => c.collection_id));
+
+    const targetColPlaceholders = [...targetCollectionIds].map(() => '?').join(',');
+    inputSkinsFromTargetCols = db.prepare(`
+      SELECT DISTINCT s.id as skin_id, s.name as skin_name, s.weapon_name, s.image_url,
+             cs.collection_id,
+             c.name as collection_name
+      FROM skins s
+      JOIN collection_skins cs ON s.id = cs.skin_id
+      JOIN collections c ON cs.collection_id = c.id
+      WHERE cs.collection_id IN (${targetColPlaceholders})
+      AND cs.rarity_id = ?
+      AND s.has_souvenir = 0
+    `).all(...targetCollectionIds, inputRarityId) as (InputCandidate & { collection_id: string; collection_name: string })[];
+  }
 
   // Get cheapest price for each input skin (non-stattrak or stattrak depending on mode)
   const inputCandidates: InputCandidate[] = [];
@@ -156,17 +198,34 @@ export function findBestTradeup(
     });
   }
 
-  // Also get filler skins from other collections at the same rarity (cheaper but reduce probability)
-  const fillerSkins = db.prepare(`
-    SELECT DISTINCT s.id as skin_id, s.name as skin_name, s.weapon_name, s.image_url,
-           cs.collection_id, c.name as collection_name
-    FROM skins s
-    JOIN collection_skins cs ON s.id = cs.skin_id
-    JOIN collections c ON cs.collection_id = c.id
-    WHERE cs.collection_id NOT IN (${targetColPlaceholders})
-    AND cs.rarity_id = ?
-    AND s.has_souvenir = 0
-  `).all(...targetCollectionIds, inputRarityId) as (InputCandidate & { collection_id: string; collection_name: string })[];
+  // Also get filler skins from other collections/crates at the same rarity (cheaper but reduce probability)
+  const fillerColPlaceholders = [...targetCollectionIds].map(() => '?').join(',');
+  let fillerSkins: (InputCandidate & { collection_id: string; collection_name: string })[];
+
+  if (isKnifeOrGlove) {
+    fillerSkins = db.prepare(`
+      SELECT DISTINCT s.id as skin_id, s.name as skin_name, s.weapon_name, s.image_url,
+             cs.crate_id as collection_id, cr.name as collection_name
+      FROM skins s
+      JOIN crate_skins cs ON s.id = cs.skin_id
+      JOIN crates cr ON cs.crate_id = cr.id
+      WHERE cs.crate_id NOT IN (${fillerColPlaceholders})
+      AND cs.rarity_id = ?
+      AND cs.is_rare = 0
+      AND s.has_souvenir = 0
+    `).all(...targetCollectionIds, inputRarityId) as (InputCandidate & { collection_id: string; collection_name: string })[];
+  } else {
+    fillerSkins = db.prepare(`
+      SELECT DISTINCT s.id as skin_id, s.name as skin_name, s.weapon_name, s.image_url,
+             cs.collection_id, c.name as collection_name
+      FROM skins s
+      JOIN collection_skins cs ON s.id = cs.skin_id
+      JOIN collections c ON cs.collection_id = c.id
+      WHERE cs.collection_id NOT IN (${fillerColPlaceholders})
+      AND cs.rarity_id = ?
+      AND s.has_souvenir = 0
+    `).all(...targetCollectionIds, inputRarityId) as (InputCandidate & { collection_id: string; collection_name: string })[];
+  }
 
   // Get cheapest fillers (limit to top 20 cheapest to keep it manageable)
   const fillerCandidates: InputCandidate[] = [];
@@ -205,20 +264,22 @@ export function findBestTradeup(
   fillerCandidates.sort((a, b) => a.cheapest_price_cents - b.cheapest_price_cents);
   const topFillers = fillerCandidates.slice(0, 20);
 
-  // Get all output skins at target rarity from all involved collections
-  const allOutputSkins = getOutputSkins(db, targetSkin.rarity_id, targetCollectionIds, stattrakFilter);
+  // Get all output skins at target rarity from all involved collections/crates
+  const allOutputSkins = isKnifeOrGlove
+    ? getOutputSkinsFromCrates(db, targetCollectionIds, stattrakFilter)
+    : getOutputSkins(db, targetSkin.rarity_id, targetCollectionIds, stattrakFilter);
 
   // Generate candidate tradeup combinations
   const combos: TradeupCombo[] = [];
 
-  // Strategy 1: Fill all 10 slots with cheapest input from target collections
+  // Strategy 1: Fill all slots with cheapest input from target collections/crates
   if (inputCandidates.length > 0) {
     const cheapestInput = [...inputCandidates].sort((a, b) => a.cheapest_price_cents - b.cheapest_price_cents)[0];
-    const combo = buildCombo(Array(10).fill(cheapestInput), targetSkinId, targetSkin, allOutputSkins, targetCollectionIds, db);
+    const combo = buildCombo(Array(numInputsRequired).fill(cheapestInput), targetSkinId, targetSkin, allOutputSkins, targetCollectionIds, db);
     if (combo) combos.push(combo);
   }
 
-  // Strategy 2: For each unique input skin from target collections, fill all 10 slots
+  // Strategy 2: For each unique input skin from target collections/crates, fill all slots
   const uniqueInputs = new Map<string, InputCandidate>();
   for (const c of inputCandidates) {
     if (!uniqueInputs.has(c.skin_id) || c.cheapest_price_cents < uniqueInputs.get(c.skin_id)!.cheapest_price_cents) {
@@ -227,24 +288,27 @@ export function findBestTradeup(
   }
 
   for (const input of uniqueInputs.values()) {
-    const combo = buildCombo(Array(10).fill(input), targetSkinId, targetSkin, allOutputSkins, targetCollectionIds, db);
+    const combo = buildCombo(Array(numInputsRequired).fill(input), targetSkinId, targetSkin, allOutputSkins, targetCollectionIds, db);
     if (combo) combos.push(combo);
   }
 
-  // Strategy 3: Mix target-collection skins with fillers (try 1-9 fillers)
+  // Strategy 3: Mix target-collection/crate skins with fillers
+  const maxFillers = isKnifeOrGlove ? 3 : 7;
   if (topFillers.length > 0 && inputCandidates.length > 0) {
     const cheapestTarget = [...inputCandidates].sort((a, b) => a.cheapest_price_cents - b.cheapest_price_cents)[0];
     const cheapestFiller = topFillers[0];
 
-    for (let numFillers = 1; numFillers <= 7; numFillers += 2) {
+    for (let numFillers = 1; numFillers <= maxFillers; numFillers += (isKnifeOrGlove ? 1 : 2)) {
       const inputs = [
-        ...Array(10 - numFillers).fill(cheapestTarget),
+        ...Array(numInputsRequired - numFillers).fill(cheapestTarget),
         ...Array(numFillers).fill(cheapestFiller),
       ];
 
-      // Need to get output skins from filler collections too
+      // Need to get output skins from filler collections/crates too
       const allCollectionIds = new Set([...targetCollectionIds, cheapestFiller.collection_id]);
-      const expandedOutputs = getOutputSkins(db, targetSkin.rarity_id, allCollectionIds, stattrakFilter);
+      const expandedOutputs = isKnifeOrGlove
+        ? getOutputSkinsFromCrates(db, allCollectionIds, stattrakFilter)
+        : getOutputSkins(db, targetSkin.rarity_id, allCollectionIds, stattrakFilter);
 
       const combo = buildCombo(inputs, targetSkinId, targetSkin, expandedOutputs, targetCollectionIds, db);
       if (combo) combos.push(combo);
@@ -390,6 +454,41 @@ function getOutputSkins(
   `).all(...ids, targetRarityId) as (OutputSkin & { skin_id: string })[];
 
   // Get cheapest price for each output skin at the target stattrak level
+  return rows.map((row) => {
+    const price = db.prepare(`
+      SELECT MIN(p.lowest_price_cents) as price
+      FROM skin_variants sv
+      JOIN prices p ON sv.market_hash_name = p.market_hash_name
+      WHERE sv.skin_id = ? AND sv.is_stattrak = ? AND sv.is_souvenir = 0
+      AND p.lowest_price_cents IS NOT NULL
+    `).get(row.skin_id, stattrakFilter) as { price: number | null } | undefined;
+
+    return {
+      ...row,
+      price_cents: price?.price ?? null,
+    };
+  });
+}
+
+function getOutputSkinsFromCrates(
+  db: ReturnType<typeof getDb>,
+  crateIds: Set<string>,
+  stattrakFilter: number
+): OutputSkin[] {
+  const ids = [...crateIds];
+  const placeholders = ids.map(() => '?').join(',');
+
+  // For gold tradeups, outputs are the rare skins (knives/gloves) from the crates
+  const rows = db.prepare(`
+    SELECT DISTINCT s.id as skin_id, s.name as skin_name, s.weapon_name, s.image_url,
+           cs.crate_id as collection_id, cr.name as collection_name
+    FROM skins s
+    JOIN crate_skins cs ON s.id = cs.skin_id
+    JOIN crates cr ON cs.crate_id = cr.id
+    WHERE cs.crate_id IN (${placeholders})
+    AND cs.is_rare = 1
+  `).all(...ids) as (OutputSkin & { skin_id: string })[];
+
   return rows.map((row) => {
     const price = db.prepare(`
       SELECT MIN(p.lowest_price_cents) as price
