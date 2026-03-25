@@ -19,6 +19,7 @@ interface TradeupCombo {
   probability: number;
   cost_per_attempt_cents: number;
   ev_cents: number;
+  expected_avg_float: number;
   all_outcomes: {
     skin_id: string;
     skin_name: string;
@@ -27,6 +28,8 @@ interface TradeupCombo {
     price_cents: number | null;
     image_url: string | null;
     is_target: boolean;
+    expected_float: number;
+    expected_wear: string;
   }[];
 }
 
@@ -226,7 +229,12 @@ function TradeupCard({ combo }: { combo: TradeupCombo }) {
 
           {/* Outcomes */}
           <div className="mt-4">
-            <h4 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">Possible Outcomes</h4>
+            <h4 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">
+              Possible Outcomes
+              <span className="ml-2 normal-case tracking-normal text-zinc-600">
+                (avg trade float: {combo.expected_avg_float.toFixed(4)})
+              </span>
+            </h4>
             <div className="space-y-1.5">
               {combo.all_outcomes.map((outcome, i) => (
                 <div key={i} className="flex items-center gap-3 text-sm">
@@ -237,6 +245,9 @@ function TradeupCard({ combo }: { combo: TradeupCombo }) {
                     <div className="flex items-center gap-2">
                       <span className={outcome.is_target ? 'text-green-400 font-medium' : 'text-zinc-300'}>
                         {outcome.skin_name}
+                      </span>
+                      <span className="text-[10px] text-zinc-500 px-1.5 py-0.5 rounded bg-zinc-700/50">
+                        {outcome.expected_wear}
                       </span>
                       {outcome.is_target && (
                         <span className="text-[10px] uppercase bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">
