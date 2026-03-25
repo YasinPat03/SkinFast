@@ -1,0 +1,9 @@
+#ignore all files in the .gitignore
+AGENTS.md
+Claude.md
+SkinFast_Analysis.md
+.env
+node_modules
+.next
+data/
+*.db
