@@ -1,0 +1,245 @@
+import { getDb, initDb } from '@/lib/db';
+import { notFound } from 'next/navigation';
+import SearchBar from '@/components/SearchBar';
+
+const RARITY_COLORS: Record<string, string> = {
+  rarity_common_weapon: '#b0c3d9',
+  rarity_uncommon_weapon: '#5e98d9',
+  rarity_rare_weapon: '#4b69ff',
+  rarity_mythical_weapon: '#8847ff',
+  rarity_legendary_weapon: '#d32ce6',
+  rarity_ancient_weapon: '#eb4b4b',
+  rarity_ancient: '#eb4b4b',
+  rarity_contraband: '#e4ae39',
+};
+
+const WEAR_ORDER = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
+
+interface SkinRow {
+  id: string;
+  name: string;
+  weapon_name: string;
+  pattern_name: string;
+  rarity_id: string;
+  rarity_name: string;
+  min_float: number;
+  max_float: number;
+  has_stattrak: number;
+  has_souvenir: number;
+  image_url: string | null;
+}
+
+interface VariantRow {
+  market_hash_name: string;
+  wear_name: string;
+  is_stattrak: number;
+  is_souvenir: number;
+  lowest_price_cents: number | null;
+  median_price_cents: number | null;
+  volume: number | null;
+  sell_listings: number | null;
+  updated_at: string | null;
+}
+
+interface CollectionRow {
+  id: string;
+  name: string;
+  image_url: string | null;
+}
+
+function formatPrice(cents: number | null): string {
+  if (cents == null) return '-';
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function timeAgo(dateStr: string | null): string {
+  if (!dateStr) return 'Never';
+  const diff = Date.now() - new Date(dateStr + 'Z').getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+export default async function SkinDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+
+  initDb();
+  const db = getDb();
+
+  const skin = db.prepare('SELECT * FROM skins WHERE id = ?').get(id) as SkinRow | undefined;
+  if (!skin) notFound();
+
+  const variants = db.prepare(`
+    SELECT
+      sv.market_hash_name, sv.wear_name, sv.is_stattrak, sv.is_souvenir,
+      p.lowest_price_cents, p.median_price_cents, p.volume, p.sell_listings, p.updated_at
+    FROM skin_variants sv
+    LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
+    WHERE sv.skin_id = ?
+  `).all(id) as VariantRow[];
+
+  const collections = db.prepare(`
+    SELECT c.id, c.name, c.image_url
+    FROM collections c
+    JOIN collection_skins cs ON c.id = cs.collection_id
+    WHERE cs.skin_id = ?
+  `).all(id) as CollectionRow[];
+
+  // Group variants by type: normal, stattrak, souvenir
+  const variantTypes = {
+    normal: variants.filter((v) => !v.is_stattrak && !v.is_souvenir),
+    stattrak: variants.filter((v) => v.is_stattrak),
+    souvenir: variants.filter((v) => v.is_souvenir),
+  };
+
+  // Determine which columns to show
+  const hasStatTrak = skin.has_stattrak === 1;
+  const hasSouvenir = skin.has_souvenir === 1;
+
+  // Build a lookup: wear -> variant for each type
+  function getVariantByWear(list: VariantRow[], wear: string): VariantRow | undefined {
+    return list.find((v) => v.wear_name === wear);
+  }
+
+  // Find the earliest updated_at for the "last updated" display
+  const allUpdatedAts = variants.map((v) => v.updated_at).filter(Boolean) as string[];
+  const oldestUpdate = allUpdatedAts.length > 0
+    ? allUpdatedAts.reduce((a, b) => (a < b ? a : b))
+    : null;
+
+  const rarityColor = RARITY_COLORS[skin.rarity_id] ?? '#888';
+
+  return (
+    <div className="flex flex-col flex-1 items-center px-4 py-8 gap-8">
+      <SearchBar />
+
+      <div className="w-full max-w-4xl">
+        {/* Skin header */}
+        <div className="flex flex-col sm:flex-row items-center gap-6 mb-8">
+          {skin.image_url && (
+            <img
+              src={skin.image_url}
+              alt={skin.name}
+              className="w-48 h-36 object-contain"
+            />
+          )}
+          <div>
+            <h1 className="text-2xl font-bold text-white">{skin.name}</h1>
+            <p className="text-sm mt-1" style={{ color: rarityColor }}>
+              {skin.rarity_name}
+            </p>
+            <p className="text-zinc-400 text-sm mt-1">
+              Float range: {skin.min_float.toFixed(2)} - {skin.max_float.toFixed(2)}
+            </p>
+            {oldestUpdate && (
+              <p className="text-zinc-500 text-xs mt-2">
+                Prices updated: {timeAgo(oldestUpdate)}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Price table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-700">
+                <th className="text-left py-2 px-3 text-zinc-400 font-medium">Wear</th>
+                <th className="text-right py-2 px-3 text-zinc-400 font-medium">Normal</th>
+                {hasStatTrak && (
+                  <th className="text-right py-2 px-3 text-orange-400 font-medium">StatTrak</th>
+                )}
+                {hasSouvenir && (
+                  <th className="text-right py-2 px-3 text-yellow-400 font-medium">Souvenir</th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {WEAR_ORDER.map((wear) => {
+                const normal = getVariantByWear(variantTypes.normal, wear);
+                const stattrak = getVariantByWear(variantTypes.stattrak, wear);
+                const souvenir = getVariantByWear(variantTypes.souvenir, wear);
+
+                // Skip wear rows where no variant exists at all
+                if (!normal && !stattrak && !souvenir) return null;
+
+                return (
+                  <tr key={wear} className="border-b border-zinc-800 hover:bg-zinc-800/50">
+                    <td className="py-3 px-3 text-zinc-300">{wear}</td>
+                    <td className="py-3 px-3 text-right">
+                      {normal ? (
+                        <PriceCell variant={normal} />
+                      ) : (
+                        <span className="text-zinc-600">-</span>
+                      )}
+                    </td>
+                    {hasStatTrak && (
+                      <td className="py-3 px-3 text-right">
+                        {stattrak ? (
+                          <PriceCell variant={stattrak} />
+                        ) : (
+                          <span className="text-zinc-600">-</span>
+                        )}
+                      </td>
+                    )}
+                    {hasSouvenir && (
+                      <td className="py-3 px-3 text-right">
+                        {souvenir ? (
+                          <PriceCell variant={souvenir} />
+                        ) : (
+                          <span className="text-zinc-600">-</span>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Collections */}
+        {collections.length > 0 && (
+          <div className="mt-8">
+            <h2 className="text-lg font-semibold text-white mb-3">Collections</h2>
+            <div className="flex flex-wrap gap-3">
+              {collections.map((col) => (
+                <div
+                  key={col.id}
+                  className="flex items-center gap-2 px-3 py-2 bg-zinc-800 rounded-lg border border-zinc-700"
+                >
+                  {col.image_url && (
+                    <img src={col.image_url} alt={col.name} className="w-8 h-8 object-contain" />
+                  )}
+                  <span className="text-sm text-zinc-300">{col.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PriceCell({ variant }: { variant: VariantRow }) {
+  const hasPrice = variant.lowest_price_cents != null;
+
+  return (
+    <div>
+      <div className={hasPrice ? 'text-white font-medium' : 'text-zinc-500'}>
+        {formatPrice(variant.lowest_price_cents)}
+      </div>
+      {hasPrice && (
+        <div className="text-xs text-zinc-500 mt-0.5">
+          {variant.sell_listings != null && `${variant.sell_listings} listed`}
+          {variant.volume != null && ` / ${variant.volume} sold`}
+        </div>
+      )}
+    </div>
+  );
+}
