@@ -8,21 +8,20 @@ CREATE TABLE IF NOT EXISTS skins (
   rarity_name TEXT NOT NULL,
   min_float REAL NOT NULL DEFAULT 0.0,
   max_float REAL NOT NULL DEFAULT 1.0,
-  has_stattrak INTEGER NOT NULL DEFAULT 0,
-  has_souvenir INTEGER NOT NULL DEFAULT 0,
+  has_stattrak BOOLEAN NOT NULL DEFAULT FALSE,
+  has_souvenir BOOLEAN NOT NULL DEFAULT FALSE,
   image_url TEXT,
   paint_index INTEGER
 );
 
 -- One row per wear x variant (normal, stattrak, souvenir) from skins_not_grouped.json
 CREATE TABLE IF NOT EXISTS skin_variants (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  skin_id TEXT NOT NULL,
+  id SERIAL PRIMARY KEY,
+  skin_id TEXT NOT NULL REFERENCES skins(id),
   market_hash_name TEXT NOT NULL UNIQUE,
   wear_name TEXT NOT NULL,
-  is_stattrak INTEGER NOT NULL DEFAULT 0,
-  is_souvenir INTEGER NOT NULL DEFAULT 0,
-  FOREIGN KEY (skin_id) REFERENCES skins(id)
+  is_stattrak BOOLEAN NOT NULL DEFAULT FALSE,
+  is_souvenir BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- Collection metadata
@@ -34,12 +33,10 @@ CREATE TABLE IF NOT EXISTS collections (
 
 -- Junction table: skins <-> collections with rarity context
 CREATE TABLE IF NOT EXISTS collection_skins (
-  collection_id TEXT NOT NULL,
-  skin_id TEXT NOT NULL,
+  collection_id TEXT NOT NULL REFERENCES collections(id),
+  skin_id TEXT NOT NULL REFERENCES skins(id),
   rarity_id TEXT NOT NULL,
-  PRIMARY KEY (collection_id, skin_id),
-  FOREIGN KEY (collection_id) REFERENCES collections(id),
-  FOREIGN KEY (skin_id) REFERENCES skins(id)
+  PRIMARY KEY (collection_id, skin_id)
 );
 
 -- Crate (case) metadata
@@ -51,13 +48,11 @@ CREATE TABLE IF NOT EXISTS crates (
 
 -- Junction table: skins <-> crates with rarity context and rare flag
 CREATE TABLE IF NOT EXISTS crate_skins (
-  crate_id TEXT NOT NULL,
-  skin_id TEXT NOT NULL,
+  crate_id TEXT NOT NULL REFERENCES crates(id),
+  skin_id TEXT NOT NULL REFERENCES skins(id),
   rarity_id TEXT NOT NULL,
-  is_rare INTEGER NOT NULL DEFAULT 0,  -- 1 = from contains_rare (knives/gloves)
-  PRIMARY KEY (crate_id, skin_id),
-  FOREIGN KEY (crate_id) REFERENCES crates(id),
-  FOREIGN KEY (skin_id) REFERENCES skins(id)
+  is_rare BOOLEAN NOT NULL DEFAULT FALSE,
+  PRIMARY KEY (crate_id, skin_id)
 );
 
 -- Cached Steam market prices
@@ -67,7 +62,7 @@ CREATE TABLE IF NOT EXISTS prices (
   median_price_cents INTEGER,
   volume INTEGER,
   sell_listings INTEGER,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Scraper state for resume capability

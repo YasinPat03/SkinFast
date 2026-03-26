@@ -1,8 +1,8 @@
-import { getDb } from './db';
+import sql from './db';
 
 // Constants
 export const SEARCH_URL = 'https://steamcommunity.com/market/search/render/';
-export const PAGE_SIZE = 10; // Steam caps at 10 results per page
+export const PAGE_SIZE = 100; // Steam allows up to 100 results per page
 export const MIN_DELAY_MS = 3000;
 export const MAX_DELAY_MS = 5000;
 export const MAX_RETRIES = 3;
@@ -79,41 +79,37 @@ export async function fetchPage(offset: number): Promise<SteamSearchResponse> {
 }
 
 // Upsert a batch of search results into the prices table
-export function upsertPriceBatch(results: SteamSearchResult[]): void {
-  const db = getDb();
+export async function upsertPriceBatch(results: SteamSearchResult[]): Promise<void> {
+  const validResults = results.filter(
+    (item) => item.hash_name && item.sell_price && item.sell_price !== 0
+  );
 
-  const upsert = db.prepare(`
-    INSERT INTO prices (market_hash_name, lowest_price_cents, median_price_cents, volume, sell_listings, updated_at)
-    VALUES (?, ?, NULL, NULL, ?, datetime('now'))
-    ON CONFLICT(market_hash_name) DO UPDATE SET
-      lowest_price_cents = excluded.lowest_price_cents,
-      sell_listings = excluded.sell_listings,
-      updated_at = datetime('now')
-  `);
+  if (validResults.length === 0) return;
 
-  const batch = db.transaction((items: SteamSearchResult[]) => {
-    for (const item of items) {
-      if (!item.hash_name || !item.sell_price || item.sell_price === 0) continue;
-      upsert.run(item.hash_name, item.sell_price, item.sell_listings ?? 0);
-    }
-  });
-
-  batch(results);
+  // Batch upsert
+  for (const item of validResults) {
+    await sql`
+      INSERT INTO prices (market_hash_name, lowest_price_cents, median_price_cents, volume, sell_listings, updated_at)
+      VALUES (${item.hash_name}, ${item.sell_price}, NULL, NULL, ${item.sell_listings ?? 0}, NOW())
+      ON CONFLICT (market_hash_name) DO UPDATE SET
+        lowest_price_cents = EXCLUDED.lowest_price_cents,
+        sell_listings = EXCLUDED.sell_listings,
+        updated_at = NOW()
+    `;
+  }
 }
 
 // Scrape state helpers
-export function getScrapeState(key: string): string | null {
-  const db = getDb();
-  const row = db.prepare('SELECT value FROM scrape_state WHERE key = ?').get(key) as { value: string } | undefined;
-  return row?.value ?? null;
+export async function getScrapeState(key: string): Promise<string | null> {
+  const rows = await sql`SELECT value FROM scrape_state WHERE key = ${key}`;
+  return rows.length > 0 ? rows[0].value : null;
 }
 
-export function saveScrapeState(key: string, value: string): void {
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO scrape_state (key, value) VALUES (?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value
-  `).run(key, value);
+export async function saveScrapeState(key: string, value: string): Promise<void> {
+  await sql`
+    INSERT INTO scrape_state (key, value) VALUES (${key}, ${value})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+  `;
 }
 
 // Run a bounded scrape: fetch up to maxPages pages starting from the current offset.
@@ -125,7 +121,7 @@ export async function scrapeChunk(maxPages: number): Promise<{
   totalCount: number;
   completed: boolean;
 }> {
-  const startOffset = parseInt(getScrapeState('last_offset') ?? '0', 10);
+  const startOffset = parseInt(await getScrapeState('last_offset') ?? '0', 10);
   let offset = startOffset;
 
   // First request to get total count
@@ -133,14 +129,19 @@ export async function scrapeChunk(maxPages: number): Promise<{
   const totalCount = firstPage.total_count;
 
   // Process first page
-  upsertPriceBatch(firstPage.results);
-  saveScrapeState('last_offset', offset.toString());
+  await upsertPriceBatch(firstPage.results);
+  const actualPageSize = firstPage.results.length;
+  offset += actualPageSize;
+  await saveScrapeState('last_offset', offset.toString());
 
-  let itemsScraped = firstPage.results.length;
-  offset += PAGE_SIZE;
+  let itemsScraped = actualPageSize;
   let pagesScraped = 1;
 
-  // Paginate through remaining results
+  if (actualPageSize < PAGE_SIZE) {
+    console.log(`  Note: Steam returned ${actualPageSize} results per page (requested ${PAGE_SIZE})`);
+  }
+
+  // Paginate through remaining results — advance by actual results returned, not PAGE_SIZE
   while (offset < totalCount && pagesScraped < maxPages) {
     await sleep(randomDelay());
 
@@ -148,18 +149,20 @@ export async function scrapeChunk(maxPages: number): Promise<{
 
     if (page.results.length === 0) break;
 
-    upsertPriceBatch(page.results);
-    saveScrapeState('last_offset', offset.toString());
+    await upsertPriceBatch(page.results);
     pagesScraped++;
     itemsScraped += page.results.length;
-    offset += PAGE_SIZE;
+    offset += page.results.length;
+    await saveScrapeState('last_offset', offset.toString());
+    console.log(`  Scraped ${itemsScraped}/${totalCount} items (page ${pagesScraped})`);
+
   }
 
   // Check if full scrape completed
   const completed = offset >= totalCount;
   if (completed) {
-    saveScrapeState('last_offset', '0');
-    saveScrapeState('last_full_scrape', new Date().toISOString());
+    await saveScrapeState('last_offset', '0');
+    await saveScrapeState('last_full_scrape', new Date().toISOString());
   }
 
   return { pagesScraped, itemsScraped, offset, totalCount, completed };

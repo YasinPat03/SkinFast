@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDb, initDb } from '@/lib/db';
+import sql from '@/lib/db';
 import { getTradeupEligibility } from '@/lib/tradeup';
 
 export async function GET(
@@ -8,18 +8,16 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  initDb();
-  const db = getDb();
-
   // Fetch skin metadata
-  const skin = db.prepare('SELECT * FROM skins WHERE id = ?').get(id);
+  const skinRows = await sql`SELECT * FROM skins WHERE id = ${id}`;
+  const skin = skinRows[0];
 
   if (!skin) {
     return NextResponse.json({ error: 'Skin not found' }, { status: 404 });
   }
 
   // Fetch all variants with prices
-  const variants = db.prepare(`
+  const variants = await sql`
     SELECT
       sv.id,
       sv.skin_id,
@@ -34,28 +32,28 @@ export async function GET(
       p.updated_at
     FROM skin_variants sv
     LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
-    WHERE sv.skin_id = ?
+    WHERE sv.skin_id = ${id}
     ORDER BY sv.is_souvenir, sv.is_stattrak, sv.wear_name
-  `).all(id);
+  `;
 
   // Fetch collections this skin belongs to
-  const collections = db.prepare(`
+  const collections = await sql`
     SELECT c.id, c.name, c.image_url
     FROM collections c
     JOIN collection_skins cs ON c.id = cs.collection_id
-    WHERE cs.skin_id = ?
-  `).all(id);
+    WHERE cs.skin_id = ${id}
+  `;
 
   // Fetch crates this skin is found in
-  const crates = db.prepare(`
+  const crates = await sql`
     SELECT cr.id, cr.name, cr.image_url, cs.is_rare
     FROM crates cr
     JOIN crate_skins cs ON cr.id = cs.crate_id
-    WHERE cs.skin_id = ?
-  `).all(id);
+    WHERE cs.skin_id = ${id}
+  `;
 
   // Get tradeup eligibility info
-  const tradeup = getTradeupEligibility(id);
+  const tradeup = await getTradeupEligibility(id);
 
   return NextResponse.json({ skin, variants, collections, crates, tradeup });
 }

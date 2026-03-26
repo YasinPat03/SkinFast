@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { initDb } from '@/lib/db';
 import { scrapeChunk, getScrapeState, saveScrapeState } from '@/lib/scraper';
 
 // Max pages per cron invocation. ~60 pages × 4s = ~240s, fits in Vercel Pro 300s timeout.
@@ -21,10 +20,8 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  initDb();
-
   // Check lock to prevent overlapping runs
-  const lockTime = getScrapeState('scrape_in_progress');
+  const lockTime = await getScrapeState('scrape_in_progress');
   if (lockTime) {
     const lockAge = Date.now() - new Date(lockTime).getTime();
     if (lockAge < LOCK_TIMEOUT_MS) {
@@ -38,13 +35,13 @@ export async function GET(request: NextRequest) {
   }
 
   // Set lock
-  saveScrapeState('scrape_in_progress', new Date().toISOString());
+  await saveScrapeState('scrape_in_progress', new Date().toISOString());
 
   try {
     const result = await scrapeChunk(MAX_PAGES_PER_RUN);
 
     // Clear lock
-    saveScrapeState('scrape_in_progress', '');
+    await saveScrapeState('scrape_in_progress', '');
 
     return NextResponse.json({
       status: 'ok',
@@ -53,11 +50,11 @@ export async function GET(request: NextRequest) {
       offset: result.offset,
       total_count: result.totalCount,
       completed_full_cycle: result.completed,
-      last_full_scrape: getScrapeState('last_full_scrape'),
+      last_full_scrape: await getScrapeState('last_full_scrape'),
     });
   } catch (err) {
     // Clear lock on error so next invocation can proceed
-    saveScrapeState('scrape_in_progress', '');
+    await saveScrapeState('scrape_in_progress', '');
 
     return NextResponse.json({
       status: 'error',

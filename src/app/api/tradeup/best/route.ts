@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { initDb } from '@/lib/db';
 import { findBestTradeup } from '@/lib/tradeup-optimizer';
 
 export async function GET(request: NextRequest) {
@@ -11,9 +10,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'skin_id is required' }, { status: 400 });
   }
 
-  initDb();
-
-  const result = findBestTradeup(skinId, wear, stattrak);
+  const result = await findBestTradeup(skinId, wear, stattrak);
 
   if ('error' in result) {
     return NextResponse.json({ error: result.error }, { status: 400 });

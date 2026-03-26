@@ -1,4 +1,4 @@
-import { getDb, initDb } from '@/lib/db';
+import sql from '@/lib/db';
 import { getTradeupEligibility } from '@/lib/tradeup';
 import { isPriceStale } from '@/lib/prices';
 import { notFound } from 'next/navigation';
@@ -28,16 +28,16 @@ interface SkinRow {
   rarity_name: string;
   min_float: number;
   max_float: number;
-  has_stattrak: number;
-  has_souvenir: number;
+  has_stattrak: boolean;
+  has_souvenir: boolean;
   image_url: string | null;
 }
 
 interface VariantRow {
   market_hash_name: string;
   wear_name: string;
-  is_stattrak: number;
-  is_souvenir: number;
+  is_stattrak: boolean;
+  is_souvenir: boolean;
   lowest_price_cents: number | null;
   median_price_cents: number | null;
   volume: number | null;
@@ -58,7 +58,7 @@ function formatPrice(cents: number | null): string {
 
 function timeAgo(dateStr: string | null): string {
   if (!dateStr) return 'Never';
-  const diff = Date.now() - new Date(dateStr + 'Z').getTime();
+  const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return 'Just now';
   if (mins < 60) return `${mins}m ago`;
@@ -71,34 +71,32 @@ function timeAgo(dateStr: string | null): string {
 export default async function SkinDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
-  initDb();
-  const db = getDb();
-
-  const skin = db.prepare('SELECT * FROM skins WHERE id = ?').get(id) as SkinRow | undefined;
+  const skinRows = await sql<SkinRow[]>`SELECT * FROM skins WHERE id = ${id}`;
+  const skin = skinRows[0];
   if (!skin) notFound();
 
-  const variants = db.prepare(`
+  const variants = await sql<VariantRow[]>`
     SELECT
       sv.market_hash_name, sv.wear_name, sv.is_stattrak, sv.is_souvenir,
       p.lowest_price_cents, p.median_price_cents, p.volume, p.sell_listings, p.updated_at
     FROM skin_variants sv
     LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
-    WHERE sv.skin_id = ?
-  `).all(id) as VariantRow[];
+    WHERE sv.skin_id = ${id}
+  `;
 
-  const collections = db.prepare(`
+  const collections = await sql<CollectionRow[]>`
     SELECT c.id, c.name, c.image_url
     FROM collections c
     JOIN collection_skins cs ON c.id = cs.collection_id
-    WHERE cs.skin_id = ?
-  `).all(id) as CollectionRow[];
+    WHERE cs.skin_id = ${id}
+  `;
 
-  const crates = db.prepare(`
+  const crates = await sql<CollectionRow[]>`
     SELECT cr.id, cr.name, cr.image_url
     FROM crates cr
     JOIN crate_skins cs ON cr.id = cs.crate_id
-    WHERE cs.skin_id = ?
-  `).all(id) as CollectionRow[];
+    WHERE cs.skin_id = ${id}
+  `;
 
   // Group variants by type: normal, stattrak, souvenir
   const variantTypes = {
@@ -108,8 +106,8 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
   };
 
   // Determine which columns to show
-  const hasStatTrak = skin.has_stattrak === 1;
-  const hasSouvenir = skin.has_souvenir === 1;
+  const hasStatTrak = skin.has_stattrak;
+  const hasSouvenir = skin.has_souvenir;
 
   // Build a lookup: wear -> variant for each type
   function getVariantByWear(list: VariantRow[], wear: string): VariantRow | undefined {
@@ -129,6 +127,16 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
   const staleMarketHashNames = variants
     .filter((v) => isPriceStale(v.updated_at, 6))
     .map((v) => v.market_hash_name);
+
+  // Get tradeup eligibility
+  const tradeup = await getTradeupEligibility(id);
+
+  // Get available wears for the non-stattrak, non-souvenir variants
+  const availableWears = [...new Set(
+    variants
+      .filter((v) => !v.is_stattrak && !v.is_souvenir)
+      .map((v) => v.wear_name)
+  )];
 
   return (
     <div className="flex flex-col flex-1 items-center px-4 py-8 gap-8">
@@ -264,7 +272,7 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
         )}
 
         {/* Tradeup Section */}
-        <TradeupSection skinId={id} skin={skin} variants={variants} />
+        <TradeupSection skinId={id} skin={skin} tradeup={tradeup} availableWears={availableWears} />
       </div>
     </div>
   );
@@ -288,16 +296,12 @@ function PriceCell({ variant }: { variant: VariantRow }) {
   );
 }
 
-function TradeupSection({ skinId, skin, variants }: { skinId: string; skin: SkinRow; variants: VariantRow[] }) {
-  const tradeup = getTradeupEligibility(skinId);
-
-  // Get available wears for the non-stattrak, non-souvenir variants
-  const availableWears = [...new Set(
-    variants
-      .filter((v) => !v.is_stattrak && !v.is_souvenir)
-      .map((v) => v.wear_name)
-  )];
-
+function TradeupSection({ skinId, skin, tradeup, availableWears }: {
+  skinId: string;
+  skin: SkinRow;
+  tradeup: Awaited<ReturnType<typeof getTradeupEligibility>>;
+  availableWears: string[];
+}) {
   return (
     <div className="mt-8 border-t border-zinc-700 pt-8">
       <h2 className="text-lg font-semibold text-white mb-4">Tradeup Contract</h2>
@@ -377,7 +381,7 @@ function TradeupSection({ skinId, skin, variants }: { skinId: string; skin: Skin
           <TradeupResults
             skinId={skinId}
             skinName={skin.name}
-            hasStatTrak={skin.has_stattrak === 1}
+            hasStatTrak={skin.has_stattrak}
             availableWears={availableWears}
           />
         </div>

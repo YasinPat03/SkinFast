@@ -1,4 +1,4 @@
-import { getDb } from './db';
+import sql from './db';
 
 const PRICE_OVERVIEW_URL = 'https://steamcommunity.com/market/priceoverview/';
 const MAX_REQUESTS_PER_MINUTE = 20;
@@ -64,16 +64,15 @@ export async function refreshSinglePrice(marketHashName: string): Promise<{
   const volume = data.volume ? parseInt(data.volume.replace(',', ''), 10) : null;
 
   // Upsert into database
-  const db = getDb();
-  db.prepare(`
+  await sql`
     INSERT INTO prices (market_hash_name, lowest_price_cents, median_price_cents, volume, sell_listings, updated_at)
-    VALUES (?, ?, ?, ?, NULL, datetime('now'))
-    ON CONFLICT(market_hash_name) DO UPDATE SET
-      lowest_price_cents = excluded.lowest_price_cents,
-      median_price_cents = excluded.median_price_cents,
-      volume = excluded.volume,
-      updated_at = datetime('now')
-  `).run(marketHashName, lowest, median, volume);
+    VALUES (${marketHashName}, ${lowest}, ${median}, ${volume}, NULL, NOW())
+    ON CONFLICT (market_hash_name) DO UPDATE SET
+      lowest_price_cents = EXCLUDED.lowest_price_cents,
+      median_price_cents = EXCLUDED.median_price_cents,
+      volume = EXCLUDED.volume,
+      updated_at = NOW()
+  `;
 
   return { lowest_price_cents: lowest, median_price_cents: median, volume };
 }
@@ -81,7 +80,7 @@ export async function refreshSinglePrice(marketHashName: string): Promise<{
 // Check if a price is stale (older than given hours)
 export function isPriceStale(updatedAt: string | null, maxAgeHours: number = 6): boolean {
   if (!updatedAt) return true;
-  const updated = new Date(updatedAt + 'Z').getTime();
+  const updated = new Date(updatedAt).getTime();
   const now = Date.now();
   return now - updated > maxAgeHours * 60 * 60 * 1000;
 }

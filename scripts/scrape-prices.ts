@@ -1,4 +1,4 @@
-import { initDb, closeDb } from '../src/lib/db';
+import './env';
 import { scrapeChunk, getScrapeState, saveScrapeState } from '../src/lib/scraper';
 
 async function main() {
@@ -10,14 +10,12 @@ async function main() {
 
   console.log('=== Steam Market Price Scraper ===\n');
 
-  initDb();
-
   // Reset offset if not resuming
   if (!resume) {
-    saveScrapeState('last_offset', '0');
+    await saveScrapeState('last_offset', '0');
   }
 
-  const currentOffset = getScrapeState('last_offset');
+  const currentOffset = await getScrapeState('last_offset');
   if (currentOffset && parseInt(currentOffset, 10) > 0) {
     console.log(`Resuming from offset ${currentOffset}`);
   }
@@ -39,12 +37,9 @@ async function main() {
     console.error('Scraper error:', err);
     console.log('Progress saved. Re-run to resume.');
   }
-
-  closeDb();
 }
 
 main().catch((err) => {
   console.error('Scraper failed:', err);
-  closeDb();
   process.exit(1);
 });

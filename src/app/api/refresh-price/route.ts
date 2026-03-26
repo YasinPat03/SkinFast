@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { initDb } from '@/lib/db';
 import { refreshSinglePrice } from '@/lib/prices';
 
 export async function POST(request: NextRequest) {
@@ -12,8 +11,6 @@ export async function POST(request: NextRequest) {
 
   // Limit to 10 items per request to stay within rate limits
   const names = marketHashNames.slice(0, 10);
-
-  initDb();
 
   const results: Record<string, { lowest_price_cents: number | null; median_price_cents: number | null; volume: number | null } | null> = {};
 

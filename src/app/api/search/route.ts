@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDb, initDb } from '@/lib/db';
+import sql from '@/lib/db';
 
 export async function GET(request: NextRequest) {
   const q = request.nextUrl.searchParams.get('q')?.trim();
@@ -8,16 +8,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json([]);
   }
 
-  initDb();
-  const db = getDb();
-
-  const results = db.prepare(`
+  const results = await sql`
     SELECT id, name, weapon_name, pattern_name, rarity_id, rarity_name, image_url
     FROM skins
-    WHERE name LIKE ?
+    WHERE name ILIKE ${'%' + q + '%'}
     ORDER BY name ASC
     LIMIT 20
-  `).all(`%${q}%`);
+  `;
 
   return NextResponse.json(results);
 }

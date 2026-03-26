@@ -4,17 +4,22 @@
  *   npx tsx scripts/refresh-prices.ts            # full refresh
  *   npx tsx scripts/refresh-prices.ts --resume    # resume interrupted scrape
  */
-import { getDb, initDb, closeDb } from '../src/lib/db';
+import './env';
+import postgres from 'postgres';
 import { execSync } from 'child_process';
 
-function main() {
-  initDb();
-  const db = getDb();
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString) {
+  console.error('DATABASE_URL environment variable is required');
+  process.exit(1);
+}
 
+const sql = postgres(connectionString);
+
+async function main() {
   // Check last full scrape time
-  const lastScrape = db.prepare(
-    "SELECT value FROM scrape_state WHERE key = 'last_full_scrape'"
-  ).get() as { value: string } | undefined;
+  const rows = await sql`SELECT value FROM scrape_state WHERE key = 'last_full_scrape'`;
+  const lastScrape = rows[0];
 
   if (lastScrape) {
     const elapsed = Date.now() - new Date(lastScrape.value).getTime();
@@ -24,7 +29,7 @@ function main() {
     console.log('No previous full scrape recorded.');
   }
 
-  closeDb();
+  await sql.end();
 
   // Run the scraper
   const args = process.argv.includes('--resume') ? '' : '--no-resume';

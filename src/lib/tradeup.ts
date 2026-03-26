@@ -1,5 +1,5 @@
-import { getDb } from './db';
-import { RARITY_TIERS, TRADEUP_INPUT_RARITY } from './types';
+import sql from './db';
+import { TRADEUP_INPUT_RARITY } from './types';
 
 interface SkinRow {
   id: string;
@@ -10,8 +10,8 @@ interface SkinRow {
   rarity_name: string;
   min_float: number;
   max_float: number;
-  has_stattrak: number;
-  has_souvenir: number;
+  has_stattrak: boolean;
+  has_souvenir: boolean;
   image_url: string | null;
 }
 
@@ -27,14 +27,6 @@ interface CollectionRow {
   id: string;
   name: string;
   image_url: string | null;
-}
-
-interface VariantPriceRow {
-  skin_id: string;
-  market_hash_name: string;
-  wear_name: string;
-  is_stattrak: number;
-  lowest_price_cents: number | null;
 }
 
 export interface TradeupEligibility {
@@ -76,10 +68,9 @@ function isKnifeOrGlove(weaponName: string): boolean {
     || lower.includes('m9') || lower.includes('shadow');
 }
 
-export function getTradeupEligibility(skinId: string): TradeupEligibility {
-  const db = getDb();
-
-  const skin = db.prepare('SELECT * FROM skins WHERE id = ?').get(skinId) as SkinRow | undefined;
+export async function getTradeupEligibility(skinId: string): Promise<TradeupEligibility> {
+  const skinRows = await sql<SkinRow[]>`SELECT * FROM skins WHERE id = ${skinId}`;
+  const skin = skinRows[0];
   if (!skin) {
     return { eligible: false, reason: 'Skin not found' };
   }
@@ -97,12 +88,12 @@ export function getTradeupEligibility(skinId: string): TradeupEligibility {
   }
 
   // Standard tradeup: check collections
-  const collections = db.prepare(`
+  const collections = await sql<CollectionRow[]>`
     SELECT c.id, c.name, c.image_url
     FROM collections c
     JOIN collection_skins cs ON c.id = cs.collection_id
-    WHERE cs.skin_id = ?
-  `).all(skinId) as CollectionRow[];
+    WHERE cs.skin_id = ${skinId}
+  `;
 
   if (collections.length === 0) {
     return { eligible: false, reason: 'This skin does not belong to any collection' };
@@ -117,36 +108,33 @@ export function getTradeupEligibility(skinId: string): TradeupEligibility {
   const inputRarityName = RARITY_NAMES[inputRarityId] ?? inputRarityId;
   const targetRarityId = skin.rarity_id;
 
-  // For each collection, find input skins (one tier below) and output skins (same tier as target)
   const collectionIds = collections.map((c) => c.id);
-  const placeholders = collectionIds.map(() => '?').join(',');
 
   // Input skins: same collections, one rarity tier below
-  const inputSkins = db.prepare(`
+  const inputSkins = await sql<InputSkinRow[]>`
     SELECT DISTINCT s.*, cs.collection_id
     FROM skins s
     JOIN collection_skins cs ON s.id = cs.skin_id
-    WHERE cs.collection_id IN (${placeholders})
-    AND cs.rarity_id = ?
-  `).all(...collectionIds, inputRarityId) as InputSkinRow[];
+    WHERE cs.collection_id IN ${sql(collectionIds)}
+    AND cs.rarity_id = ${inputRarityId}
+  `;
 
-  // If no input skins exist, tradeup is not possible
   if (inputSkins.length === 0) {
     return { eligible: false, reason: `No ${inputRarityName} skins found in the same collection(s)` };
   }
 
   // Output skins (competitors): same collections, same rarity as target
-  const outputSkins = db.prepare(`
+  const outputSkins = await sql<OutputSkinRow[]>`
     SELECT DISTINCT s.*, cs.collection_id
     FROM skins s
     JOIN collection_skins cs ON s.id = cs.skin_id
-    WHERE cs.collection_id IN (${placeholders})
-    AND cs.rarity_id = ?
-  `).all(...collectionIds, targetRarityId) as OutputSkinRow[];
+    WHERE cs.collection_id IN ${sql(collectionIds)}
+    AND cs.rarity_id = ${targetRarityId}
+  `;
 
   // Get cheapest prices for input and output skins
   const allSkinIds = [...new Set([...inputSkins.map((s) => s.id), ...outputSkins.map((s) => s.id)])];
-  const cheapestPrices = getCheapestPrices(allSkinIds);
+  const cheapestPrices = await getCheapestPrices(allSkinIds);
 
   // Group by collection
   const collectionData = collections.map((col) => {
@@ -184,17 +172,15 @@ export function getTradeupEligibility(skinId: string): TradeupEligibility {
 }
 
 // Gold tradeup for knives/gloves: 5 Covert inputs from the same crates
-function getGoldTradeupEligibility(skinId: string, skin: SkinRow): TradeupEligibility {
-  const db = getDb();
-
+async function getGoldTradeupEligibility(skinId: string, skin: SkinRow): Promise<TradeupEligibility> {
   // Find crates that contain this knife/glove (in contains_rare)
-  const crates = db.prepare(`
+  const crates = await sql<CollectionRow[]>`
     SELECT cr.id, cr.name, cr.image_url
     FROM crates cr
     JOIN crate_skins cs ON cr.id = cs.crate_id
-    WHERE cs.skin_id = ?
-    AND cs.is_rare = 1
-  `).all(skinId) as CollectionRow[];
+    WHERE cs.skin_id = ${skinId}
+    AND cs.is_rare = TRUE
+  `;
 
   if (crates.length === 0) {
     return { eligible: false, reason: 'This knife/glove is not found in any cases' };
@@ -204,30 +190,29 @@ function getGoldTradeupEligibility(skinId: string, skin: SkinRow): TradeupEligib
   const inputRarityName = RARITY_NAMES[inputRarityId] ?? 'Covert';
 
   const crateIds = crates.map((c) => c.id);
-  const placeholders = crateIds.map(() => '?').join(',');
 
-  // Input skins: Covert (rarity_ancient_weapon) skins from the same crates, NOT knives/gloves (is_rare = 0)
-  const inputSkins = db.prepare(`
+  // Input skins: Covert skins from the same crates, NOT knives/gloves (is_rare = false)
+  const inputSkins = await sql<InputSkinRow[]>`
     SELECT DISTINCT s.*, cs.crate_id as collection_id
     FROM skins s
     JOIN crate_skins cs ON s.id = cs.skin_id
-    WHERE cs.crate_id IN (${placeholders})
-    AND cs.rarity_id = ?
-    AND cs.is_rare = 0
-  `).all(...crateIds, inputRarityId) as InputSkinRow[];
+    WHERE cs.crate_id IN ${sql(crateIds)}
+    AND cs.rarity_id = ${inputRarityId}
+    AND cs.is_rare = FALSE
+  `;
 
-  // Output skins: all knives/gloves (is_rare = 1) from the same crates
-  const outputSkins = db.prepare(`
+  // Output skins: all knives/gloves (is_rare = true) from the same crates
+  const outputSkins = await sql<OutputSkinRow[]>`
     SELECT DISTINCT s.*, cs.crate_id as collection_id
     FROM skins s
     JOIN crate_skins cs ON s.id = cs.skin_id
-    WHERE cs.crate_id IN (${placeholders})
-    AND cs.is_rare = 1
-  `).all(...crateIds) as OutputSkinRow[];
+    WHERE cs.crate_id IN ${sql(crateIds)}
+    AND cs.is_rare = TRUE
+  `;
 
   // Get cheapest prices
   const allSkinIds = [...new Set([...inputSkins.map((s) => s.id), ...outputSkins.map((s) => s.id)])];
-  const cheapestPrices = getCheapestPrices(allSkinIds);
+  const cheapestPrices = await getCheapestPrices(allSkinIds);
 
   // Group by crate
   const collectionData = crates.map((crate) => {
@@ -269,22 +254,19 @@ function getGoldTradeupEligibility(skinId: string, skin: SkinRow): TradeupEligib
 }
 
 // Get cheapest non-StatTrak, non-Souvenir price for each skin
-function getCheapestPrices(skinIds: string[]): Map<string, number> {
+async function getCheapestPrices(skinIds: string[]): Promise<Map<string, number>> {
   if (skinIds.length === 0) return new Map();
 
-  const db = getDb();
-  const placeholders = skinIds.map(() => '?').join(',');
-
-  const rows = db.prepare(`
+  const rows = await sql<{ skin_id: string; cheapest_price_cents: number }[]>`
     SELECT sv.skin_id, MIN(p.lowest_price_cents) as cheapest_price_cents
     FROM skin_variants sv
     JOIN prices p ON sv.market_hash_name = p.market_hash_name
-    WHERE sv.skin_id IN (${placeholders})
-    AND sv.is_stattrak = 0
-    AND sv.is_souvenir = 0
+    WHERE sv.skin_id IN ${sql(skinIds)}
+    AND sv.is_stattrak = FALSE
+    AND sv.is_souvenir = FALSE
     AND p.lowest_price_cents IS NOT NULL
     GROUP BY sv.skin_id
-  `).all(...skinIds) as { skin_id: string; cheapest_price_cents: number }[];
+  `;
 
   const map = new Map<string, number>();
   for (const row of rows) {
@@ -294,12 +276,11 @@ function getCheapestPrices(skinIds: string[]): Map<string, number> {
 }
 
 // Calculate probability of landing a specific target skin given a set of inputs
-export function calculateTradeupProbability(
+export async function calculateTradeupProbability(
   targetSkinId: string,
   inputs: { skinId: string; collectionId: string }[],
   isGoldTradeup: boolean = false
-): { probability: number; outcomes: { skinId: string; skinName: string; collectionId: string; probability: number }[] } {
-  const db = getDb();
+): Promise<{ probability: number; outcomes: { skinId: string; skinName: string; collectionId: string; probability: number }[] }> {
   const totalInputs = inputs.length;
 
   // Count inputs per collection/crate
@@ -309,7 +290,8 @@ export function calculateTradeupProbability(
   }
 
   // Get target skin info
-  const targetSkin = db.prepare('SELECT * FROM skins WHERE id = ?').get(targetSkinId) as SkinRow;
+  const targetSkinRows = await sql<SkinRow[]>`SELECT * FROM skins WHERE id = ${targetSkinId}`;
+  const targetSkin = targetSkinRows[0];
   const targetRarityId = targetSkin.rarity_id;
 
   // For each collection/crate that has inputs, find all possible output skins
@@ -320,23 +302,21 @@ export function calculateTradeupProbability(
     let outputSkins: { id: string; name: string }[];
 
     if (isGoldTradeup) {
-      // For gold tradeups, outputs are rare skins (knives/gloves) from the crate
-      outputSkins = db.prepare(`
+      outputSkins = await sql<{ id: string; name: string }[]>`
         SELECT s.id, s.name
         FROM skins s
         JOIN crate_skins cs ON s.id = cs.skin_id
-        WHERE cs.crate_id = ?
-        AND cs.is_rare = 1
-      `).all(collectionId) as { id: string; name: string }[];
+        WHERE cs.crate_id = ${collectionId}
+        AND cs.is_rare = TRUE
+      `;
     } else {
-      // Standard tradeup: outputs are skins at target rarity in the collection
-      outputSkins = db.prepare(`
+      outputSkins = await sql<{ id: string; name: string }[]>`
         SELECT s.id, s.name
         FROM skins s
         JOIN collection_skins cs ON s.id = cs.skin_id
-        WHERE cs.collection_id = ?
-        AND cs.rarity_id = ?
-      `).all(collectionId, targetRarityId) as { id: string; name: string }[];
+        WHERE cs.collection_id = ${collectionId}
+        AND cs.rarity_id = ${targetRarityId}
+      `;
     }
 
     const numOutputs = outputSkins.length;

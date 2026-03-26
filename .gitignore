@@ -4,6 +4,7 @@ Claude.md
 SkinFast_Analysis.md
 tradeup_calculator.md
 .env
+.env.local
 node_modules
 .next
 data/
