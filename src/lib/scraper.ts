@@ -117,6 +117,7 @@ export async function saveScrapeState(key: string, value: string): Promise<void>
 export async function scrapeChunk(maxPages: number): Promise<{
   pagesScraped: number;
   itemsScraped: number;
+  startOffset: number;
   offset: number;
   totalCount: number;
   completed: boolean;
@@ -128,6 +129,8 @@ export async function scrapeChunk(maxPages: number): Promise<{
   const firstPage = await fetchPage(offset);
   const totalCount = firstPage.total_count;
 
+  console.log(`[scraper] Starting from offset ${startOffset}/${totalCount} (${maxPages} pages max)`);
+
   // Process first page
   await upsertPriceBatch(firstPage.results);
   const actualPageSize = firstPage.results.length;
@@ -138,7 +141,7 @@ export async function scrapeChunk(maxPages: number): Promise<{
   let pagesScraped = 1;
 
   if (actualPageSize < PAGE_SIZE) {
-    console.log(`  Note: Steam returned ${actualPageSize} results per page (requested ${PAGE_SIZE})`);
+    console.log(`[scraper] Note: Steam returned ${actualPageSize} results per page (requested ${PAGE_SIZE})`);
   }
 
   // Paginate through remaining results — advance by actual results returned, not PAGE_SIZE
@@ -154,7 +157,7 @@ export async function scrapeChunk(maxPages: number): Promise<{
     itemsScraped += page.results.length;
     offset += page.results.length;
     await saveScrapeState('last_offset', offset.toString());
-    console.log(`  Scraped ${itemsScraped}/${totalCount} items (page ${pagesScraped})`);
+    console.log(`[scraper] Page ${pagesScraped}/${maxPages} — offset ${offset}/${totalCount} (+${page.results.length} items)`);
 
   }
 
@@ -165,5 +168,7 @@ export async function scrapeChunk(maxPages: number): Promise<{
     await saveScrapeState('last_full_scrape', new Date().toISOString());
   }
 
-  return { pagesScraped, itemsScraped, offset, totalCount, completed };
+  console.log(`[scraper] Done — scraped ${pagesScraped} pages, ${itemsScraped} items. Offset: ${startOffset} → ${offset}/${totalCount}. Completed cycle: ${completed}`);
+
+  return { pagesScraped, itemsScraped, startOffset, offset, totalCount, completed };
 }
