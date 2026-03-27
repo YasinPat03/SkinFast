@@ -1,5 +1,11 @@
 import sql from './db';
 import { TRADEUP_INPUT_RARITY } from './types';
+import {
+  TRADEUP_EXCLUDED_COLLECTION_IDS,
+  TRADEUP_EXCLUDED_COLLECTION_REASON,
+  hasTradeupExcludedCollection,
+  isTradeupExcludedCollectionId,
+} from './tradeup-rules';
 
 interface SkinRow {
   id: string;
@@ -59,13 +65,22 @@ const RARITY_NAMES: Record<string, string> = {
 function isKnifeOrGlove(weaponName: string): boolean {
   const lower = weaponName.toLowerCase();
   return lower.includes('knife') || lower.includes('bayonet') || lower.includes('karambit')
-    || lower.includes('gloves') || lower.includes('daggers') || lower.includes('navaja')
+    || lower.includes('gloves') || lower.includes('wraps') || lower.includes('daggers') || lower.includes('navaja')
     || lower.includes('stiletto') || lower.includes('talon') || lower.includes('ursus')
     || lower.includes('nomad') || lower.includes('skeleton') || lower.includes('paracord')
     || lower.includes('survival') || lower.includes('classic') || lower.includes('kukri')
     || lower.includes('falchion') || lower.includes('bowie') || lower.includes('huntsman')
     || lower.includes('butterfly') || lower.includes('flip') || lower.includes('gut')
     || lower.includes('m9') || lower.includes('shadow');
+}
+
+function isGlove(weaponName: string): boolean {
+  const lower = weaponName.toLowerCase();
+  return lower.includes('gloves') || lower.includes('wraps');
+}
+
+function isKnife(weaponName: string): boolean {
+  return isKnifeOrGlove(weaponName) && !isGlove(weaponName);
 }
 
 export async function getTradeupEligibility(skinId: string): Promise<TradeupEligibility> {
@@ -84,7 +99,7 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
   const skinIsKnifeOrGlove = isKnifeOrGlove(skin.weapon_name);
 
   if (skinIsKnifeOrGlove) {
-    return getGoldTradeupEligibility(skinId, skin);
+    return getGoldTradeupEligibility(skinId);
   }
 
   // Standard tradeup: check collections
@@ -97,6 +112,10 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
 
   if (collections.length === 0) {
     return { eligible: false, reason: 'This skin does not belong to any collection' };
+  }
+
+  if (hasTradeupExcludedCollection(collections.map((collection) => collection.id))) {
+    return { eligible: false, reason: TRADEUP_EXCLUDED_COLLECTION_REASON };
   }
 
   // Determine input rarity
@@ -117,6 +136,7 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
     JOIN collection_skins cs ON s.id = cs.skin_id
     WHERE cs.collection_id IN ${sql(collectionIds)}
     AND cs.rarity_id = ${inputRarityId}
+    AND cs.collection_id NOT IN ${sql(TRADEUP_EXCLUDED_COLLECTION_IDS)}
   `;
 
   if (inputSkins.length === 0) {
@@ -130,6 +150,7 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
     JOIN collection_skins cs ON s.id = cs.skin_id
     WHERE cs.collection_id IN ${sql(collectionIds)}
     AND cs.rarity_id = ${targetRarityId}
+    AND cs.collection_id NOT IN ${sql(TRADEUP_EXCLUDED_COLLECTION_IDS)}
   `;
 
   // Get cheapest prices for input and output skins
@@ -172,7 +193,7 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
 }
 
 // Gold tradeup for knives/gloves: 5 Covert inputs from the same crates
-async function getGoldTradeupEligibility(skinId: string, skin: SkinRow): Promise<TradeupEligibility> {
+async function getGoldTradeupEligibility(skinId: string): Promise<TradeupEligibility> {
   // Find crates that contain this knife/glove (in contains_rare)
   const crates = await sql<CollectionRow[]>`
     SELECT cr.id, cr.name, cr.image_url
@@ -284,7 +305,8 @@ async function getCheapestPrices(skinIds: string[]): Promise<Map<string, { price
 export async function calculateTradeupProbability(
   targetSkinId: string,
   inputs: { skinId: string; collectionId: string }[],
-  isGoldTradeup: boolean = false
+  isGoldTradeup: boolean = false,
+  isStatTrakTradeup: boolean = false
 ): Promise<{ probability: number; outcomes: { skinId: string; skinName: string; collectionId: string; probability: number }[] }> {
   const totalInputs = inputs.length;
 
@@ -297,30 +319,54 @@ export async function calculateTradeupProbability(
   // Get target skin info
   const targetSkinRows = await sql<SkinRow[]>`SELECT * FROM skins WHERE id = ${targetSkinId}`;
   const targetSkin = targetSkinRows[0];
+  if (!targetSkin) {
+    return { probability: 0, outcomes: [] };
+  }
   const targetRarityId = targetSkin.rarity_id;
+
+  if (!isGoldTradeup) {
+    const targetCollections = await sql<{ collection_id: string }[]>`
+      SELECT collection_id
+      FROM collection_skins
+      WHERE skin_id = ${targetSkinId}
+    `;
+
+    if (hasTradeupExcludedCollection(targetCollections.map((collection) => collection.collection_id))) {
+      return { probability: 0, outcomes: [] };
+    }
+  }
 
   // For each collection/crate that has inputs, find all possible output skins
   const outcomes: { skinId: string; skinName: string; collectionId: string; probability: number }[] = [];
   const skinProbabilities = new Map<string, number>();
 
   for (const [collectionId, inputCount] of inputsPerCollection) {
-    let outputSkins: { id: string; name: string }[];
+    let outputSkins: { id: string; name: string; weapon_name: string }[];
 
     if (isGoldTradeup) {
-      outputSkins = await sql<{ id: string; name: string }[]>`
-        SELECT s.id, s.name
+      outputSkins = await sql<{ id: string; name: string; weapon_name: string }[]>`
+        SELECT s.id, s.name, s.weapon_name
         FROM skins s
         JOIN crate_skins cs ON s.id = cs.skin_id
         WHERE cs.crate_id = ${collectionId}
         AND cs.is_rare = TRUE
       `;
+
+      if (isStatTrakTradeup) {
+        outputSkins = outputSkins.filter((skin) => isKnife(skin.weapon_name));
+      }
     } else {
-      outputSkins = await sql<{ id: string; name: string }[]>`
-        SELECT s.id, s.name
+      if (isTradeupExcludedCollectionId(collectionId)) {
+        continue;
+      }
+
+      outputSkins = await sql<{ id: string; name: string; weapon_name: string }[]>`
+        SELECT s.id, s.name, s.weapon_name
         FROM skins s
         JOIN collection_skins cs ON s.id = cs.skin_id
         WHERE cs.collection_id = ${collectionId}
         AND cs.rarity_id = ${targetRarityId}
+        AND cs.collection_id NOT IN ${sql(TRADEUP_EXCLUDED_COLLECTION_IDS)}
       `;
     }
 

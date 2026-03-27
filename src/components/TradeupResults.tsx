@@ -1,37 +1,67 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import FallbackPrice from './FallbackPrice';
+
+type FloatSource = 'wear_assumption' | 'exact';
+
+interface TradeupGroupedInput {
+  skin_id: string;
+  skin_name: string;
+  weapon_name: string;
+  wear_name: string;
+  price_cents: number;
+  collection_id: string;
+  collection_name: string;
+  market_hash_name: string;
+  image_url: string | null;
+  quantity: number;
+}
+
+interface TradeupConcreteInput {
+  slot: number;
+  skin_id: string;
+  skin_name: string;
+  weapon_name: string;
+  wear_name: string;
+  price_cents: number;
+  collection_id: string;
+  collection_name: string;
+  market_hash_name: string;
+  image_url: string | null;
+  min_float: number;
+  max_float: number;
+  input_float: number;
+  normalized_float: number;
+  float_source: FloatSource;
+}
+
+interface TradeupOutcome {
+  skin_id: string;
+  skin_name: string;
+  weapon_name: string;
+  probability: number;
+  price_cents: number | null;
+  image_url: string | null;
+  is_target: boolean;
+  is_last_sold_price: boolean;
+  expected_float: number;
+  expected_wear: string;
+}
 
 interface TradeupCombo {
   rank: number;
-  inputs: {
-    skin_id: string;
-    skin_name: string;
-    weapon_name: string;
-    wear_name: string;
-    price_cents: number;
-    collection_name: string;
-    market_hash_name: string;
-    image_url: string | null;
-    quantity: number;
-  }[];
+  inputs: TradeupGroupedInput[];
+  concrete_inputs: TradeupConcreteInput[];
   total_cost_cents: number;
   probability: number;
-  cost_per_attempt_cents: number;
+  target_skin_probability: number;
+  target_matches_requested_wear: boolean;
+  cost_per_attempt_cents: number | null;
   ev_cents: number;
-  expected_avg_float: number;
-  all_outcomes: {
-    skin_id: string;
-    skin_name: string;
-    weapon_name: string;
-    probability: number;
-    price_cents: number | null;
-    image_url: string | null;
-    is_target: boolean;
-    is_last_sold_price: boolean;
-    expected_float: number;
-    expected_wear: string;
-  }[];
+  avg_normalized_float: number;
+  float_source: FloatSource;
+  all_outcomes: TradeupOutcome[];
   has_last_sold_prices: boolean;
 }
 
@@ -56,17 +86,14 @@ const WEAR_OPTIONS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn'
 
 export default function TradeupResults({
   skinId,
-  skinName,
   hasStatTrak,
   availableWears,
 }: {
   skinId: string;
-  skinName: string;
   hasStatTrak: boolean;
   availableWears: string[];
 }) {
   const [wear, setWear] = useState(() => {
-    // Default to Field-Tested if available, otherwise first available
     return availableWears.includes('Field-Tested') ? 'Field-Tested' : availableWears[0] ?? 'Field-Tested';
   });
   const [isStatTrak, setIsStatTrak] = useState(false);
@@ -100,7 +127,6 @@ export default function TradeupResults({
 
   return (
     <div>
-      {/* Controls */}
       <div className="flex flex-wrap items-center gap-4 mb-4">
         <div className="flex items-center gap-2">
           <label className="text-sm text-zinc-400">Target wear:</label>
@@ -109,8 +135,8 @@ export default function TradeupResults({
             onChange={(e) => setWear(e.target.value)}
             className="bg-zinc-800 border border-zinc-700 text-white text-sm rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
           >
-            {WEAR_OPTIONS.filter((w) => availableWears.includes(w)).map((w) => (
-              <option key={w} value={w}>{w}</option>
+            {WEAR_OPTIONS.filter((option) => availableWears.includes(option)).map((option) => (
+              <option key={option} value={option}>{option}</option>
             ))}
           </select>
         </div>
@@ -137,14 +163,12 @@ export default function TradeupResults({
         </button>
       </div>
 
-      {/* Error */}
       {error && (
         <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/20 rounded px-3 py-2 mb-4">
           {error}
         </div>
       )}
 
-      {/* Loading */}
       {loading && (
         <div className="flex items-center gap-2 text-zinc-400 text-sm py-4">
           <div className="w-4 h-4 border-2 border-zinc-600 border-t-blue-500 rounded-full animate-spin" />
@@ -152,17 +176,22 @@ export default function TradeupResults({
         </div>
       )}
 
-      {/* Results */}
       {result && (
         <div className="space-y-4">
           {result.tradeups.length === 0 ? (
             <p className="text-zinc-400 text-sm py-4">
-              No tradeup combinations found. This may be because input skins don&apos;t have price data yet.
+              No tradeup combinations found. This may be because input skins do not have price data yet.
               Run the price scraper to populate prices.
             </p>
           ) : (
             result.tradeups.map((combo) => (
-              <TradeupCard key={combo.rank} combo={combo} />
+              <TradeupCard
+                key={combo.rank}
+                combo={combo}
+                skinId={skinId}
+                targetWear={wear}
+                isStatTrak={isStatTrak}
+              />
             ))
           )}
         </div>
@@ -171,14 +200,88 @@ export default function TradeupResults({
   );
 }
 
-function TradeupCard({ combo }: { combo: TradeupCombo }) {
+function TradeupCard({
+  combo,
+  skinId,
+  targetWear,
+  isStatTrak,
+}: {
+  combo: TradeupCombo;
+  skinId: string;
+  targetWear: string;
+  isStatTrak: boolean;
+}) {
   const [expanded, setExpanded] = useState(combo.rank === 1);
   const [showEvTooltip, setShowEvTooltip] = useState(false);
-  const evPositive = combo.ev_cents >= 0;
+  const [workingCombo, setWorkingCombo] = useState(combo);
+  const [floatInputs, setFloatInputs] = useState(() => combo.concrete_inputs.map((input) => input.input_float.toFixed(5)));
+  const [evaluationError, setEvaluationError] = useState<string | null>(null);
+  const [evaluating, setEvaluating] = useState(false);
+  const evPositive = workingCombo.ev_cents >= 0;
+
+  useEffect(() => {
+    setWorkingCombo(combo);
+    setFloatInputs(combo.concrete_inputs.map((input) => input.input_float.toFixed(5)));
+    setEvaluationError(null);
+  }, [combo]);
+
+  function updateFloatValue(index: number, value: string) {
+    setFloatInputs((current) => current.map((entry, entryIndex) => (entryIndex === index ? value : entry)));
+  }
+
+  async function recalculateWithExactFloats() {
+    const parsedFloats = floatInputs.map((value) => Number.parseFloat(value));
+    if (parsedFloats.some((value) => !Number.isFinite(value))) {
+      setEvaluationError('Enter a valid float for every input slot.');
+      return;
+    }
+
+    setEvaluating(true);
+    setEvaluationError(null);
+
+    try {
+      const res = await fetch('/api/tradeup/evaluate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          skin_id: skinId,
+          wear: targetWear,
+          stattrak: isStatTrak,
+          inputs: workingCombo.concrete_inputs.map((input, index) => ({
+            skin_id: input.skin_id,
+            collection_id: input.collection_id,
+            market_hash_name: input.market_hash_name,
+            wear_name: input.wear_name,
+            price_cents: input.price_cents,
+            input_float: parsedFloats[index],
+          })),
+        }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setEvaluationError(data.error);
+        return;
+      }
+
+      setWorkingCombo({ ...data, rank: combo.rank });
+      setFloatInputs(data.concrete_inputs.map((input: TradeupConcreteInput) => input.input_float.toFixed(5)));
+    } catch {
+      setEvaluationError('Failed to evaluate exact floats.');
+    } finally {
+      setEvaluating(false);
+    }
+  }
+
+  function resetFloatEditor() {
+    setWorkingCombo(combo);
+    setFloatInputs(combo.concrete_inputs.map((input) => input.input_float.toFixed(5)));
+    setEvaluationError(null);
+  }
 
   return (
     <div className="bg-zinc-800/50 border border-zinc-700 rounded-lg overflow-hidden">
-      {/* Header — always visible */}
       <button
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center justify-between px-4 py-3 hover:bg-zinc-800 transition-colors text-left"
@@ -187,24 +290,25 @@ function TradeupCard({ combo }: { combo: TradeupCombo }) {
           <span className="text-zinc-500 text-sm font-mono">#{combo.rank}</span>
           <div>
             <span className="text-white font-medium">
-              {formatPrice(combo.cost_per_attempt_cents)} per attempt
+              {formatPrice(workingCombo.cost_per_attempt_cents)}
+              {workingCombo.cost_per_attempt_cents != null ? ' per attempt' : ' requested target not hit'}
             </span>
             <span className="text-zinc-400 text-sm ml-2">
-              ({(combo.probability * 100).toFixed(1)}% chance)
+              ({(workingCombo.probability * 100).toFixed(1)}% requested wear chance)
             </span>
           </div>
         </div>
         <div className="flex items-center gap-4">
           <span
             className={`text-sm font-medium relative ${evPositive ? 'text-green-400' : 'text-red-400'}`}
-            onMouseEnter={() => combo.has_last_sold_prices && setShowEvTooltip(true)}
+            onMouseEnter={() => workingCombo.has_last_sold_prices && setShowEvTooltip(true)}
             onMouseLeave={() => setShowEvTooltip(false)}
           >
-            EV: {evPositive ? '+' : ''}{formatPrice(combo.ev_cents)}
-            {combo.has_last_sold_prices && <span className="text-orange-400">*</span>}
+            EV: {evPositive ? '+' : ''}{formatPrice(workingCombo.ev_cents)}
+            {workingCombo.has_last_sold_prices && <span className="text-orange-400">*</span>}
             {showEvTooltip && (
               <span className="absolute bottom-full right-0 mb-2 w-64 px-3 py-2 text-xs text-zinc-200 bg-zinc-900 border border-zinc-600 rounded-lg shadow-lg z-50 font-normal text-left pointer-events-none">
-                EV may be skewed — one or more outcome skins have no active listing, so their last sold price is used instead.
+                EV may be skewed because one or more outcomes only had last-sold fallback pricing.
               </span>
             )}
           </span>
@@ -214,17 +318,15 @@ function TradeupCard({ combo }: { combo: TradeupCombo }) {
         </div>
       </button>
 
-      {/* Expanded details */}
       {expanded && (
         <div className="px-4 pb-4 border-t border-zinc-700/50">
-          {/* Inputs */}
           <div className="mt-3">
             <h4 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">
-              Inputs — {formatPrice(combo.total_cost_cents)} total
+              Inputs - {formatPrice(workingCombo.total_cost_cents)} total
             </h4>
             <div className="space-y-1.5">
-              {combo.inputs.map((input, i) => (
-                <div key={i} className="flex items-center gap-3 text-sm">
+              {workingCombo.inputs.map((input, index) => (
+                <div key={`${input.skin_id}:${input.collection_id}:${index}`} className="flex items-center gap-3 text-sm">
                   {input.image_url && (
                     <img src={input.image_url} alt={input.skin_name} className="w-10 h-7 object-contain flex-shrink-0" />
                   )}
@@ -240,17 +342,85 @@ function TradeupCard({ combo }: { combo: TradeupCombo }) {
             </div>
           </div>
 
-          {/* Outcomes */}
+          <div className="mt-4 bg-zinc-900/40 border border-zinc-700 rounded-lg p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <div>
+                <h4 className="text-xs uppercase tracking-wider text-zinc-500">Exact Float Inputs</h4>
+                <p className="text-xs text-zinc-500 mt-1">
+                  Edit the exact float for each slot and recalculate the contract with true float-level math.
+                </p>
+              </div>
+              <div className="text-xs text-zinc-500">
+                Current source: {workingCombo.float_source === 'exact' ? 'exact floats' : 'wear assumptions'}
+              </div>
+            </div>
+
+            <div className="grid gap-2 md:grid-cols-2">
+              {workingCombo.concrete_inputs.map((input, index) => (
+                <label
+                  key={`${input.slot}:${input.market_hash_name}`}
+                  className="flex items-center gap-3 rounded border border-zinc-700 bg-zinc-800/50 px-3 py-2"
+                >
+                  <span className="text-xs text-zinc-500 w-6">#{input.slot}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-zinc-300 truncate">{input.skin_name}</div>
+                    <div className="text-xs text-zinc-500">
+                      {input.wear_name} · range {input.min_float.toFixed(2)}-{input.max_float.toFixed(2)}
+                    </div>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step="0.00001"
+                    value={floatInputs[index] ?? ''}
+                    onChange={(e) => updateFloatValue(index, e.target.value)}
+                    className="w-24 rounded border border-zinc-600 bg-zinc-900 px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
+                  />
+                </label>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 mt-3">
+              <button
+                onClick={recalculateWithExactFloats}
+                disabled={evaluating}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-zinc-700 disabled:text-zinc-500 text-white text-sm rounded transition-colors"
+              >
+                {evaluating ? 'Recalculating...' : 'Recalculate Exact Contract'}
+              </button>
+              <button
+                onClick={resetFloatEditor}
+                disabled={evaluating}
+                className="px-3 py-1.5 bg-zinc-800 border border-zinc-700 hover:border-zinc-500 disabled:text-zinc-600 text-zinc-300 text-sm rounded transition-colors"
+              >
+                Reset
+              </button>
+            </div>
+
+            {evaluationError && (
+              <div className="mt-3 text-sm text-red-400">
+                {evaluationError}
+              </div>
+            )}
+
+            {!workingCombo.target_matches_requested_wear && (
+              <div className="mt-3 text-sm text-amber-400">
+                These exact floats do not land the target skin in {targetWear}. Target skin chance remains {(workingCombo.target_skin_probability * 100).toFixed(1)}%, but requested wear chance is 0%.
+              </div>
+            )}
+          </div>
+
           <div className="mt-4">
             <h4 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">
               Possible Outcomes
               <span className="ml-2 normal-case tracking-normal text-zinc-600">
-                (avg trade float: {combo.expected_avg_float.toFixed(4)})
+                (avg normalized float: {workingCombo.avg_normalized_float.toFixed(4)})
               </span>
             </h4>
             <div className="space-y-1.5">
-              {combo.all_outcomes.map((outcome, i) => (
-                <div key={i} className="flex items-center gap-3 text-sm">
+              {workingCombo.all_outcomes.map((outcome, index) => (
+                <div key={`${outcome.skin_id}:${index}`} className="flex items-center gap-3 text-sm">
                   {outcome.image_url && (
                     <img src={outcome.image_url} alt={outcome.skin_name} className="w-10 h-7 object-contain flex-shrink-0" />
                   )}
@@ -268,7 +438,6 @@ function TradeupCard({ combo }: { combo: TradeupCombo }) {
                         </span>
                       )}
                     </div>
-                    {/* Probability bar */}
                     <div className="flex items-center gap-2 mt-0.5">
                       <div className="flex-1 h-1.5 bg-zinc-700 rounded-full overflow-hidden max-w-32">
                         <div
@@ -279,13 +448,19 @@ function TradeupCard({ combo }: { combo: TradeupCombo }) {
                       <span className="text-xs text-zinc-500 w-12 text-right">
                         {(outcome.probability * 100).toFixed(1)}%
                       </span>
+                      <span className="text-xs text-zinc-600 w-16 text-right">
+                        {outcome.expected_float.toFixed(4)}
+                      </span>
                     </div>
                   </div>
-                  <span className={`ml-auto flex-shrink-0 ${outcome.is_last_sold_price ? 'text-orange-400' : 'text-zinc-400'}`}>
-                    {formatPrice(outcome.price_cents)}
-                    {outcome.is_last_sold_price && (
-                      <span className="text-[10px] text-orange-400/70 ml-1">last sold</span>
-                    )}
+                  <span className="ml-auto flex-shrink-0">
+                    <FallbackPrice
+                      priceCents={outcome.price_cents}
+                      isLastSoldPrice={outcome.is_last_sold_price}
+                      normalClassName="text-zinc-400"
+                      fallbackClassName="text-orange-400"
+                      nullLabel="-"
+                    />
                   </span>
                 </div>
               ))}

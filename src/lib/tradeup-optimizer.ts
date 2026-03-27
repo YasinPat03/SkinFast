@@ -1,18 +1,33 @@
 import sql from './db';
 import { TRADEUP_INPUT_RARITY } from './types';
+import {
+  TRADEUP_EXCLUDED_COLLECTION_IDS,
+  TRADEUP_EXCLUDED_COLLECTION_REASON,
+  hasTradeupExcludedCollection,
+  isTradeupExcludedCollectionId,
+} from './tradeup-rules';
 
 // ── Knife/Glove Detection ─────────────────────────────────────────
 
 function isKnifeOrGloveSkin(weaponName: string): boolean {
   const lower = weaponName.toLowerCase();
   return lower.includes('knife') || lower.includes('bayonet') || lower.includes('karambit')
-    || lower.includes('gloves') || lower.includes('daggers') || lower.includes('navaja')
+    || lower.includes('gloves') || lower.includes('wraps') || lower.includes('daggers') || lower.includes('navaja')
     || lower.includes('stiletto') || lower.includes('talon') || lower.includes('ursus')
     || lower.includes('nomad') || lower.includes('skeleton') || lower.includes('paracord')
     || lower.includes('survival') || lower.includes('classic') || lower.includes('kukri')
     || lower.includes('falchion') || lower.includes('bowie') || lower.includes('huntsman')
     || lower.includes('butterfly') || lower.includes('flip') || lower.includes('gut')
     || lower.includes('m9') || lower.includes('shadow');
+}
+
+function isGloveSkin(weaponName: string): boolean {
+  const lower = weaponName.toLowerCase();
+  return lower.includes('gloves') || lower.includes('wraps');
+}
+
+function isKnifeSkin(weaponName: string): boolean {
+  return isKnifeOrGloveSkin(weaponName) && !isGloveSkin(weaponName);
 }
 
 // ── Float Utilities ───────────────────────────────────────────────
@@ -73,7 +88,7 @@ interface WearOption {
   wear_name: string;
   market_hash_name: string;
   price_cents: number;
-  estimated_float: number;
+  assumed_float: number;
   t_float: number;
 }
 
@@ -105,38 +120,75 @@ interface OutputSkin {
   last_sold_by_wear: Record<string, number>; // wear_name -> median_price_cents (fallback)
 }
 
+type FloatSource = 'wear_assumption' | 'exact';
+
+export interface TradeupConcreteInput {
+  slot: number;
+  skin_id: string;
+  skin_name: string;
+  weapon_name: string;
+  wear_name: string;
+  price_cents: number;
+  collection_id: string;
+  collection_name: string;
+  market_hash_name: string;
+  image_url: string | null;
+  min_float: number;
+  max_float: number;
+  input_float: number;
+  normalized_float: number;
+  float_source: FloatSource;
+}
+
+export interface TradeupGroupedInput {
+  skin_id: string;
+  skin_name: string;
+  weapon_name: string;
+  wear_name: string;
+  price_cents: number;
+  collection_id: string;
+  collection_name: string;
+  market_hash_name: string;
+  image_url: string | null;
+  quantity: number;
+}
+
+export interface TradeupOutcomeEvaluation {
+  skin_id: string;
+  skin_name: string;
+  weapon_name: string;
+  probability: number;
+  price_cents: number | null;
+  image_url: string | null;
+  is_target: boolean;
+  is_last_sold_price: boolean;
+  expected_float: number;
+  expected_wear: string;
+}
+
 export interface TradeupCombo {
   rank: number;
-  inputs: {
-    skin_id: string;
-    skin_name: string;
-    weapon_name: string;
-    wear_name: string;
-    price_cents: number;
-    collection_id: string;
-    collection_name: string;
-    market_hash_name: string;
-    image_url: string | null;
-    quantity: number;
-  }[];
+  inputs: TradeupGroupedInput[];
+  concrete_inputs: TradeupConcreteInput[];
   total_cost_cents: number;
   probability: number;
-  cost_per_attempt_cents: number;
+  target_skin_probability: number;
+  target_matches_requested_wear: boolean;
+  cost_per_attempt_cents: number | null;
   ev_cents: number;
-  expected_avg_float: number;
-  all_outcomes: {
-    skin_id: string;
-    skin_name: string;
-    weapon_name: string;
-    probability: number;
-    price_cents: number | null;
-    image_url: string | null;
-    is_target: boolean;
-    is_last_sold_price: boolean;
-    expected_float: number;
-    expected_wear: string;
-  }[];
+  avg_normalized_float: number;
+  float_source: FloatSource;
+  all_outcomes: TradeupOutcomeEvaluation[];
   has_last_sold_prices: boolean;
+}
+
+export interface ExactTradeupInput {
+  skin_id: string;
+  collection_id: string;
+  market_hash_name: string;
+  wear_name: string;
+  price_cents: number;
+  input_float: number;
 }
 
 export interface TradeupFinderResult {
@@ -157,6 +209,8 @@ interface SlotState {
   candidate: InputCandidate;
   wearIdx: number;
 }
+
+type ResolvedTradeupInput = TradeupConcreteInput;
 
 // ── Main Entry Point ──────────────────────────────────────────────
 
@@ -183,19 +237,42 @@ export async function findBestTradeup(
   const inputRarityId = isGold ? 'rarity_ancient_weapon' : TRADEUP_INPUT_RARITY[targetSkin.rarity_id];
   if (!inputRarityId) return { error: 'No valid input rarity for this skin' };
 
+  if (!isGold) {
+    const targetCollections = await sql<{ collection_id: string }[]>`
+      SELECT collection_id
+      FROM collection_skins
+      WHERE skin_id = ${targetSkinId}
+    `;
+
+    if (hasTradeupExcludedCollection(targetCollections.map((collection) => collection.collection_id))) {
+      return { error: TRADEUP_EXCLUDED_COLLECTION_REASON };
+    }
+  }
+
   // Gather input candidates with per-wear options
   const { targetCandidates, fillerCandidates, targetCollectionIds } = await gatherInputCandidates(
-    targetSkinId, inputRarityId, stattrakFilter, isGold
+    targetSkinId, inputRarityId, isGold ? null : targetSkin.rarity_id, stattrakFilter, isGold
   );
 
   if (targetCandidates.length === 0) {
     return { error: isGold ? 'No Covert inputs found in same cases' : 'No inputs found in same collections' };
   }
 
+  const outputCache = new Map<string, OutputSkin[]>();
+  async function getOutputSet(collectionIds: Set<string>): Promise<OutputSkin[]> {
+    const key = [...collectionIds].sort().join('|');
+    const cached = outputCache.get(key);
+    if (cached) return cached;
+
+    const outputs = isGold
+      ? await gatherOutputSkinsFromCrates(collectionIds, stattrakFilter)
+      : await gatherOutputSkins(targetSkin.rarity_id, collectionIds, stattrakFilter);
+    outputCache.set(key, outputs);
+    return outputs;
+  }
+
   // Gather output skins with per-wear prices
-  const allOutputSkins = isGold
-    ? await gatherOutputSkinsFromCrates(targetCollectionIds, stattrakFilter)
-    : await gatherOutputSkins(targetSkin.rarity_id, targetCollectionIds, stattrakFilter);
+  const allOutputSkins = await getOutputSet(targetCollectionIds);
 
   // Generate combos
   const combos: TradeupCombo[] = [];
@@ -217,21 +294,20 @@ export async function findBestTradeup(
 
   // Strategy 3: Mix with fillers
   const topFillers = [...fillerCandidates].sort((a, b) => a.cheapest_price_cents - b.cheapest_price_cents).slice(0, 10);
-  const maxFillers = isGold ? 3 : 7;
+  const maxFillers = numInputs - 1;
   if (topFillers.length > 0) {
-    const cheapestFiller = topFillers[0];
-    for (let nf = 1; nf <= maxFillers; nf += (isGold ? 1 : 2)) {
-      const inputs = [
-        ...Array(numInputs - nf).fill(cheapestTarget),
-        ...Array(nf).fill(cheapestFiller),
-      ];
+    for (const filler of topFillers) {
+      for (let nf = 1; nf <= maxFillers; nf++) {
+        const inputs = [
+          ...Array(numInputs - nf).fill(cheapestTarget),
+          ...Array(nf).fill(filler),
+        ];
 
-      const expandedCollIds = new Set([...targetCollectionIds, cheapestFiller.collection_id]);
-      const expandedOutputs = isGold
-        ? await gatherOutputSkinsFromCrates(expandedCollIds, stattrakFilter)
-        : await gatherOutputSkins(targetSkin.rarity_id, expandedCollIds, stattrakFilter);
+        const expandedCollIds = new Set([...targetCollectionIds, filler.collection_id]);
+        const expandedOutputs = await getOutputSet(expandedCollIds);
 
-      generateWearVariants(inputs, targetSkinId, targetWear, expandedOutputs, numInputs, combos);
+        generateWearVariants(inputs, targetSkinId, targetWear, expandedOutputs, numInputs, combos);
+      }
     }
   }
 
@@ -261,6 +337,91 @@ export async function findBestTradeup(
 }
 
 // ── Wear Variant Generation ───────────────────────────────────────
+
+export async function evaluateTradeupContract(
+  targetSkinId: string,
+  targetWear: string,
+  isStatTrak: boolean,
+  inputs: ExactTradeupInput[]
+): Promise<TradeupCombo | { error: string }> {
+  if (inputs.length === 0) {
+    return { error: 'At least one input is required' };
+  }
+
+  const targetSkinRows = await sql<SkinRow[]>`SELECT * FROM skins WHERE id = ${targetSkinId}`;
+  const targetSkin = targetSkinRows[0];
+  if (!targetSkin) return { error: 'Target skin not found' };
+
+  const isGold = isKnifeOrGloveSkin(targetSkin.weapon_name);
+  const numInputs = isGold ? 5 : 10;
+  if (inputs.length !== numInputs) {
+    return { error: `Expected ${numInputs} inputs for this contract` };
+  }
+
+  if (isGold && isStatTrak && !isKnifeSkin(targetSkin.weapon_name)) {
+    return { error: 'StatTrak Covert tradeups can only produce knives' };
+  }
+
+  const inputRarityId = isGold ? 'rarity_ancient_weapon' : TRADEUP_INPUT_RARITY[targetSkin.rarity_id];
+  if (!inputRarityId) return { error: 'No valid input rarity for this skin' };
+
+  const inputSkinIds = [...new Set(inputs.map((input) => input.skin_id))];
+  const inputSkinRows = await sql<SkinRow[]>`
+    SELECT *
+    FROM skins
+    WHERE id IN ${sql(inputSkinIds)}
+  `;
+  const inputSkinMap = new Map(inputSkinRows.map((row) => [row.id, row]));
+
+  const resolvedInputs: ResolvedTradeupInput[] = [];
+  for (let index = 0; index < inputs.length; index++) {
+    const input = inputs[index];
+    const skin = inputSkinMap.get(input.skin_id);
+    if (!skin) {
+      return { error: `Input skin not found: ${input.skin_id}` };
+    }
+
+    if (skin.rarity_id !== inputRarityId) {
+      return { error: `Invalid input rarity for ${skin.name}` };
+    }
+
+    const clampedFloat = Math.min(Math.max(input.input_float, skin.min_float), skin.max_float);
+    resolvedInputs.push({
+      slot: index + 1,
+      skin_id: skin.id,
+      skin_name: skin.name,
+      weapon_name: skin.weapon_name,
+      wear_name: input.wear_name,
+      price_cents: input.price_cents,
+      collection_id: input.collection_id,
+      collection_name: input.collection_id,
+      market_hash_name: input.market_hash_name,
+      image_url: skin.image_url,
+      min_float: skin.min_float,
+      max_float: skin.max_float,
+      input_float: clampedFloat,
+      normalized_float: calculateTFloat(clampedFloat, skin.min_float, skin.max_float),
+      float_source: 'exact',
+    });
+  }
+
+  const collectionIds = new Set(resolvedInputs.map((input) => input.collection_id));
+  const outputSkins = isGold
+    ? await gatherOutputSkinsFromCrates(collectionIds, isStatTrak)
+    : await gatherOutputSkins(targetSkin.rarity_id, collectionIds, isStatTrak);
+
+  const collectionNameMap = new Map(outputSkins.map((output) => [output.collection_id, output.collection_name]));
+  for (const input of resolvedInputs) {
+    input.collection_name = collectionNameMap.get(input.collection_id) ?? input.collection_name;
+  }
+
+  const combo = evaluateResolvedTradeup(resolvedInputs, targetSkinId, targetWear, outputSkins, numInputs);
+  if (!combo) {
+    return { error: 'Unable to evaluate this contract against the available outputs' };
+  }
+
+  return combo;
+}
 
 function generateWearVariants(
   inputSlots: InputCandidate[],
@@ -399,25 +560,64 @@ function buildComboFromSlots(
   outputSkins: OutputSkin[],
   numInputs: number
 ): TradeupCombo | null {
-  const avgTFloat = calculateAvgTFloat(slots);
+  const resolvedInputs = slots.map<ResolvedTradeupInput>((slot, index) => {
+    const wear = slot.candidate.wear_options[slot.wearIdx];
+    return {
+      slot: index + 1,
+      skin_id: slot.candidate.skin_id,
+      skin_name: slot.candidate.skin_name,
+      weapon_name: slot.candidate.weapon_name,
+      wear_name: wear.wear_name,
+      price_cents: wear.price_cents,
+      collection_id: slot.candidate.collection_id,
+      collection_name: slot.candidate.collection_name,
+      market_hash_name: wear.market_hash_name,
+      image_url: slot.candidate.image_url,
+      min_float: slot.candidate.min_float,
+      max_float: slot.candidate.max_float,
+      input_float: wear.assumed_float,
+      normalized_float: calculateTFloat(wear.assumed_float, slot.candidate.min_float, slot.candidate.max_float),
+      float_source: 'wear_assumption',
+    };
+  });
 
-  // Check that the target skin's output float lands in the requested wear
-  const targetOutput = outputSkins.find((o) => o.skin_id === targetSkinId);
-  if (targetOutput) {
-    const targetOutputFloat = calculateOutputFloat(avgTFloat, targetOutput.min_float, targetOutput.max_float);
-    const resultingWear = floatToWear(targetOutputFloat);
-    if (resultingWear !== targetWear) return null;
+  const combo = evaluateResolvedTradeup(resolvedInputs, targetSkinId, targetWear, outputSkins, numInputs);
+  if (!combo || !combo.target_matches_requested_wear || combo.probability <= 0) {
+    return null;
   }
 
+  return combo;
+}
+
+function evaluateResolvedTradeup(
+  resolvedInputs: ResolvedTradeupInput[],
+  targetSkinId: string,
+  targetWear: string,
+  outputSkins: OutputSkin[],
+  numInputs: number
+): TradeupCombo | null {
+  if (resolvedInputs.length !== numInputs) return null;
+
+  const avgNormalizedFloat = resolvedInputs.reduce((sum, input) => sum + input.normalized_float, 0) / numInputs;
+
   const inputsPerCollection = new Map<string, number>();
-  for (const slot of slots) {
-    const colId = slot.candidate.collection_id;
-    inputsPerCollection.set(colId, (inputsPerCollection.get(colId) ?? 0) + 1);
+  for (const input of resolvedInputs) {
+    inputsPerCollection.set(input.collection_id, (inputsPerCollection.get(input.collection_id) ?? 0) + 1);
+  }
+
+  const outputsByCollection = new Map<string, OutputSkin[]>();
+  for (const output of outputSkins) {
+    const existing = outputsByCollection.get(output.collection_id);
+    if (existing) {
+      existing.push(output);
+    } else {
+      outputsByCollection.set(output.collection_id, [output]);
+    }
   }
 
   const outcomeProbs = new Map<string, number>();
   for (const [collectionId, count] of inputsPerCollection) {
-    const collectionOutputs = outputSkins.filter((o) => o.collection_id === collectionId);
+    const collectionOutputs = outputsByCollection.get(collectionId) ?? [];
     const numOutputs = collectionOutputs.length;
     if (numOutputs === 0) continue;
 
@@ -427,50 +627,54 @@ function buildComboFromSlots(
     }
   }
 
-  const targetProb = outcomeProbs.get(targetSkinId) ?? 0;
-  if (targetProb === 0) return null;
+  const targetSkinProb = outcomeProbs.get(targetSkinId) ?? 0;
+  if (targetSkinProb === 0) return null;
 
-  const totalCost = slots.reduce((sum, s) => sum + s.candidate.wear_options[s.wearIdx].price_cents, 0);
-  const costPerAttempt = Math.round(totalCost / targetProb);
+  const targetOutput = outputSkins.find((o) => o.skin_id === targetSkinId) ?? null;
+  const targetOutputFloat = targetOutput
+    ? calculateOutputFloat(avgNormalizedFloat, targetOutput.min_float, targetOutput.max_float)
+    : null;
+  const targetMatchesRequestedWear = targetOutputFloat != null && floatToWear(targetOutputFloat) === targetWear;
+  const requestedTargetProb = targetMatchesRequestedWear ? targetSkinProb : 0;
+
+  const totalCost = resolvedInputs.reduce((sum, input) => sum + input.price_cents, 0);
+  const costPerAttempt = requestedTargetProb > 0 ? Math.round(totalCost / requestedTargetProb) : null;
 
   let ev = -totalCost;
   let anyLastSold = false;
-  const allOutcomes: TradeupCombo['all_outcomes'] = [];
+  const allOutcomes: TradeupOutcomeEvaluation[] = [];
 
   for (const [skinId, prob] of outcomeProbs) {
-    const output = outputSkins.find((o) => o.skin_id === skinId);
+    const output = outputSkins.find((candidate) => candidate.skin_id === skinId);
     if (!output) continue;
 
-    const outputFloat = calculateOutputFloat(avgTFloat, output.min_float, output.max_float);
+    const outputFloat = calculateOutputFloat(avgNormalizedFloat, output.min_float, output.max_float);
     const outputWear = floatToWear(outputFloat);
 
     let priceAtWear = output.prices_by_wear[outputWear] ?? null;
     let isLastSold = false;
 
     if (priceAtWear === null) {
-      // Fallback 1: last sold price for the exact wear
       priceAtWear = output.last_sold_by_wear[outputWear] ?? null;
       if (priceAtWear !== null) isLastSold = true;
     }
 
     if (priceAtWear === null) {
-      // Fallback 2: cheapest listing price across any wear
-      const availableListings = Object.entries(output.prices_by_wear);
+      const availableListings = Object.values(output.prices_by_wear);
       if (availableListings.length > 0) {
-        priceAtWear = Math.min(...availableListings.map(([, p]) => p));
+        priceAtWear = Math.min(...availableListings);
       }
     }
 
     if (priceAtWear === null) {
-      // Fallback 3: cheapest last sold across any wear
-      const availableLastSold = Object.entries(output.last_sold_by_wear);
+      const availableLastSold = Object.values(output.last_sold_by_wear);
       if (availableLastSold.length > 0) {
-        priceAtWear = Math.min(...availableLastSold.map(([, p]) => p));
+        priceAtWear = Math.min(...availableLastSold);
         isLastSold = true;
       }
     }
 
-    if (priceAtWear) {
+    if (priceAtWear != null) {
       ev += priceAtWear * prob;
     }
 
@@ -492,37 +696,48 @@ function buildComboFromSlots(
 
   allOutcomes.sort((a, b) => b.probability - a.probability);
 
-  const inputMap = new Map<string, TradeupCombo['inputs'][0]>();
-  for (const slot of slots) {
-    const wear = slot.candidate.wear_options[slot.wearIdx];
-    const key = `${slot.candidate.skin_id}:${wear.wear_name}`;
-    const existing = inputMap.get(key);
+  const groupedInputs = new Map<string, TradeupGroupedInput>();
+  for (const input of resolvedInputs) {
+    const key = `${input.skin_id}:${input.collection_id}:${input.wear_name}:${input.market_hash_name}:${input.price_cents}`;
+    const existing = groupedInputs.get(key);
     if (existing) {
       existing.quantity++;
     } else {
-      inputMap.set(key, {
-        skin_id: slot.candidate.skin_id,
-        skin_name: slot.candidate.skin_name,
-        weapon_name: slot.candidate.weapon_name,
-        wear_name: wear.wear_name,
-        price_cents: wear.price_cents,
-        collection_id: slot.candidate.collection_id,
-        collection_name: slot.candidate.collection_name,
-        market_hash_name: wear.market_hash_name,
-        image_url: slot.candidate.image_url,
+      groupedInputs.set(key, {
+        skin_id: input.skin_id,
+        skin_name: input.skin_name,
+        weapon_name: input.weapon_name,
+        wear_name: input.wear_name,
+        price_cents: input.price_cents,
+        collection_id: input.collection_id,
+        collection_name: input.collection_name,
+        market_hash_name: input.market_hash_name,
+        image_url: input.image_url,
         quantity: 1,
       });
     }
   }
 
+  const floatSource: FloatSource = resolvedInputs.every((input) => input.float_source === 'exact')
+    ? 'exact'
+    : 'wear_assumption';
+
   return {
     rank: 0,
-    inputs: Array.from(inputMap.values()),
+    inputs: Array.from(groupedInputs.values()),
+    concrete_inputs: resolvedInputs.map((input) => ({
+      ...input,
+      input_float: Math.round(input.input_float * 100000) / 100000,
+      normalized_float: Math.round(input.normalized_float * 100000) / 100000,
+    })),
     total_cost_cents: totalCost,
-    probability: Math.round(targetProb * 10000) / 10000,
+    probability: Math.round(requestedTargetProb * 10000) / 10000,
+    target_skin_probability: Math.round(targetSkinProb * 10000) / 10000,
+    target_matches_requested_wear: targetMatchesRequestedWear,
     cost_per_attempt_cents: costPerAttempt,
     ev_cents: Math.round(ev),
-    expected_avg_float: Math.round(avgTFloat * 100000) / 100000,
+    avg_normalized_float: Math.round(avgNormalizedFloat * 100000) / 100000,
+    float_source: floatSource,
     all_outcomes: allOutcomes,
     has_last_sold_prices: anyLastSold,
   };
@@ -539,6 +754,7 @@ type RawInput = {
 async function gatherInputCandidates(
   targetSkinId: string,
   inputRarityId: string,
+  outputRarityId: string | null,
   stattrakFilter: boolean,
   isGold: boolean
 ): Promise<{
@@ -565,13 +781,23 @@ async function gatherInputCandidates(
       JOIN crate_skins cs ON s.id = cs.skin_id
       JOIN crates cr ON cs.crate_id = cr.id
       WHERE cs.crate_id IN ${sql(ids)}
-      AND cs.rarity_id = ${inputRarityId} AND cs.is_rare = FALSE AND s.has_souvenir = FALSE
+      AND cs.rarity_id = ${inputRarityId} AND cs.is_rare = FALSE
+      AND EXISTS (
+        SELECT 1
+        FROM crate_skins cs_out
+        WHERE cs_out.crate_id = cs.crate_id
+        AND cs_out.is_rare = TRUE
+      )
     `;
   } else {
     const cols = await sql<{ collection_id: string }[]>`
       SELECT collection_id FROM collection_skins WHERE skin_id = ${targetSkinId}
     `;
-    targetCollectionIds = new Set(cols.map((c) => c.collection_id));
+    targetCollectionIds = new Set(
+      cols
+        .map((c) => c.collection_id)
+        .filter((collectionId) => !isTradeupExcludedCollectionId(collectionId))
+    );
     if (targetCollectionIds.size === 0) return { targetCandidates: [], fillerCandidates: [], targetCollectionIds };
 
     const ids = [...targetCollectionIds];
@@ -583,7 +809,14 @@ async function gatherInputCandidates(
       JOIN collection_skins cs ON s.id = cs.skin_id
       JOIN collections c ON cs.collection_id = c.id
       WHERE cs.collection_id IN ${sql(ids)}
-      AND cs.rarity_id = ${inputRarityId} AND s.has_souvenir = FALSE
+      AND cs.rarity_id = ${inputRarityId}
+      AND cs.collection_id NOT IN ${sql(TRADEUP_EXCLUDED_COLLECTION_IDS)}
+      AND EXISTS (
+        SELECT 1
+        FROM collection_skins cs_out
+        WHERE cs_out.collection_id = cs.collection_id
+        AND cs_out.rarity_id = ${outputRarityId}
+      )
     `;
   }
 
@@ -602,7 +835,13 @@ async function gatherInputCandidates(
       JOIN crate_skins cs ON s.id = cs.skin_id
       JOIN crates cr ON cs.crate_id = cr.id
       WHERE cs.crate_id NOT IN ${sql(targetIds)}
-      AND cs.rarity_id = ${inputRarityId} AND cs.is_rare = FALSE AND s.has_souvenir = FALSE
+      AND cs.rarity_id = ${inputRarityId} AND cs.is_rare = FALSE
+      AND EXISTS (
+        SELECT 1
+        FROM crate_skins cs_out
+        WHERE cs_out.crate_id = cs.crate_id
+        AND cs_out.is_rare = TRUE
+      )
     `;
   } else {
     rawFillerInputs = await sql<RawInput[]>`
@@ -613,7 +852,14 @@ async function gatherInputCandidates(
       JOIN collection_skins cs ON s.id = cs.skin_id
       JOIN collections c ON cs.collection_id = c.id
       WHERE cs.collection_id NOT IN ${sql(targetIds)}
-      AND cs.rarity_id = ${inputRarityId} AND s.has_souvenir = FALSE
+      AND cs.collection_id NOT IN ${sql(TRADEUP_EXCLUDED_COLLECTION_IDS)}
+      AND cs.rarity_id = ${inputRarityId}
+      AND EXISTS (
+        SELECT 1
+        FROM collection_skins cs_out
+        WHERE cs_out.collection_id = cs.collection_id
+        AND cs_out.rarity_id = ${outputRarityId}
+      )
     `;
   }
 
@@ -653,7 +899,7 @@ async function buildCandidatesWithWears(
         wear_name: w.wear_name,
         market_hash_name: w.market_hash_name,
         price_cents: w.lowest_price_cents,
-        estimated_float: estFloat,
+        assumed_float: estFloat,
         t_float: tFloat,
       };
     });
@@ -698,6 +944,7 @@ async function gatherOutputSkins(
     JOIN collections c ON cs.collection_id = c.id
     WHERE cs.collection_id IN ${sql(ids)}
     AND cs.rarity_id = ${targetRarityId}
+    AND cs.collection_id NOT IN ${sql(TRADEUP_EXCLUDED_COLLECTION_IDS)}
   `;
 
   const results: OutputSkin[] = [];
@@ -729,9 +976,16 @@ async function gatherOutputSkinsFromCrates(
     AND cs.is_rare = TRUE
   `;
 
+  const filteredRows = stattrakFilter
+    ? rows.filter((row) => isKnifeSkin(row.weapon_name))
+    : rows;
+
   const results: OutputSkin[] = [];
-  for (const row of rows) {
+  for (const row of filteredRows) {
     const { prices_by_wear, last_sold_by_wear } = await getWearPrices(row.skin_id, stattrakFilter);
+    if (stattrakFilter && Object.keys(prices_by_wear).length === 0 && Object.keys(last_sold_by_wear).length === 0) {
+      continue;
+    }
     results.push({
       ...row,
       prices_by_wear,

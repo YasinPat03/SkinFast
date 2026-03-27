@@ -5,6 +5,7 @@ import { notFound } from 'next/navigation';
 import SearchBar from '@/components/SearchBar';
 import TradeupResults from '@/components/TradeupResults';
 import PriceRefreshButton from '@/components/PriceRefreshButton';
+import FallbackPrice from '@/components/FallbackPrice';
 
 const RARITY_COLORS: Record<string, string> = {
   rarity_common_weapon: '#b0c3d9',
@@ -123,9 +124,11 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
   const rarityColor = RARITY_COLORS[skin.rarity_id] ?? '#888';
 
   // Check if any prices are stale (>6 hours old)
-  const hasStalePrice = variants.some((v) => isPriceStale(v.updated_at, 6));
+  const hasStalePrice = variants.some((v) =>
+    isPriceStale(v.updated_at, 6, v.lowest_price_cents, v.median_price_cents)
+  );
   const staleMarketHashNames = variants
-    .filter((v) => isPriceStale(v.updated_at, 6))
+    .filter((v) => isPriceStale(v.updated_at, 6, v.lowest_price_cents, v.median_price_cents))
     .map((v) => v.market_hash_name);
 
   // Get tradeup eligibility
@@ -289,8 +292,15 @@ function PriceCell({ variant }: { variant: VariantRow }) {
           {formatPrice(variant.lowest_price_cents)}
         </div>
       ) : hasLastSold ? (
-        <div className="text-orange-400 font-medium" title="No active listings — showing last sold price">
-          {formatPrice(variant.median_price_cents)}
+        <div className="font-medium">
+          <FallbackPrice
+            priceCents={variant.median_price_cents}
+            isLastSoldPrice
+            normalClassName="text-white"
+            fallbackClassName="text-orange-400"
+            nullClassName="text-zinc-500"
+            nullLabel="-"
+          />
         </div>
       ) : (
         <div className="text-zinc-500">-</div>
@@ -298,9 +308,6 @@ function PriceCell({ variant }: { variant: VariantRow }) {
       <div className="text-xs mt-0.5 space-x-1">
         {hasLastSold && hasListing && (
           <span className="text-zinc-500">Last sold: {formatPrice(variant.median_price_cents)}</span>
-        )}
-        {hasLastSold && !hasListing && (
-          <span className="text-orange-400/70">last sold</span>
         )}
         {!hasLastSold && hasListing && variant.sell_listings != null && (
           <span className="text-zinc-500">
@@ -368,10 +375,13 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                           <div key={s.id} className="flex items-center gap-2 text-sm">
                             {s.image_url && <img src={s.image_url} alt={s.name} className="w-10 h-7 object-contain" />}
                             <span className="text-zinc-300">{s.name}</span>
-                            <span className={`ml-auto ${s.is_last_sold_price ? 'text-orange-400' : 'text-zinc-500'}`}>
-                              {s.cheapest_price_cents != null
-                                ? `${formatPrice(s.cheapest_price_cents)}${s.is_last_sold_price ? ' (last sold)' : ''}`
-                                : 'No price'}
+                            <span className="ml-auto">
+                              <FallbackPrice
+                                priceCents={s.cheapest_price_cents}
+                                isLastSoldPrice={s.is_last_sold_price}
+                                normalClassName="text-zinc-500"
+                                fallbackClassName="text-orange-400"
+                              />
                             </span>
                           </div>
                         ))}
@@ -387,10 +397,13 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                               {s.name}
                               {s.id === skinId && ' (target)'}
                             </span>
-                            <span className={`ml-auto ${s.is_last_sold_price ? 'text-orange-400' : 'text-zinc-500'}`}>
-                              {s.cheapest_price_cents != null
-                                ? `${formatPrice(s.cheapest_price_cents)}${s.is_last_sold_price ? ' (last sold)' : ''}`
-                                : 'No price'}
+                            <span className="ml-auto">
+                              <FallbackPrice
+                                priceCents={s.cheapest_price_cents}
+                                isLastSoldPrice={s.is_last_sold_price}
+                                normalClassName="text-zinc-500"
+                                fallbackClassName="text-orange-400"
+                              />
                             </span>
                           </div>
                         ))}
@@ -405,7 +418,6 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
           {/* Best tradeup finder */}
           <TradeupResults
             skinId={skinId}
-            skinName={skin.name}
             hasStatTrak={skin.has_stattrak}
             availableWears={availableWears}
           />
