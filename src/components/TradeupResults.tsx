@@ -28,9 +28,11 @@ interface TradeupCombo {
     price_cents: number | null;
     image_url: string | null;
     is_target: boolean;
+    is_last_sold_price: boolean;
     expected_float: number;
     expected_wear: string;
   }[];
+  has_last_sold_prices: boolean;
 }
 
 interface TradeupFinderResult {
@@ -171,6 +173,7 @@ export default function TradeupResults({
 
 function TradeupCard({ combo }: { combo: TradeupCombo }) {
   const [expanded, setExpanded] = useState(combo.rank === 1);
+  const [showEvTooltip, setShowEvTooltip] = useState(false);
   const evPositive = combo.ev_cents >= 0;
 
   return (
@@ -192,8 +195,18 @@ function TradeupCard({ combo }: { combo: TradeupCombo }) {
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <span className={`text-sm font-medium ${evPositive ? 'text-green-400' : 'text-red-400'}`}>
+          <span
+            className={`text-sm font-medium relative ${evPositive ? 'text-green-400' : 'text-red-400'}`}
+            onMouseEnter={() => combo.has_last_sold_prices && setShowEvTooltip(true)}
+            onMouseLeave={() => setShowEvTooltip(false)}
+          >
             EV: {evPositive ? '+' : ''}{formatPrice(combo.ev_cents)}
+            {combo.has_last_sold_prices && <span className="text-orange-400">*</span>}
+            {showEvTooltip && (
+              <span className="absolute bottom-full right-0 mb-2 w-64 px-3 py-2 text-xs text-zinc-200 bg-zinc-900 border border-zinc-600 rounded-lg shadow-lg z-50 font-normal text-left pointer-events-none">
+                EV may be skewed — one or more outcome skins have no active listing, so their last sold price is used instead.
+              </span>
+            )}
           </span>
           <span className="text-zinc-500 text-sm">
             {expanded ? '\u25B2' : '\u25BC'}
@@ -268,8 +281,11 @@ function TradeupCard({ combo }: { combo: TradeupCombo }) {
                       </span>
                     </div>
                   </div>
-                  <span className="text-zinc-400 ml-auto flex-shrink-0">
+                  <span className={`ml-auto flex-shrink-0 ${outcome.is_last_sold_price ? 'text-orange-400' : 'text-zinc-400'}`}>
                     {formatPrice(outcome.price_cents)}
+                    {outcome.is_last_sold_price && (
+                      <span className="text-[10px] text-orange-400/70 ml-1">last sold</span>
+                    )}
                   </span>
                 </div>
               ))}

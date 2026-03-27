@@ -17,7 +17,7 @@ const RARITY_COLORS: Record<string, string> = {
   rarity_contraband: '#e4ae39',
 };
 
-const WEAR_ORDER = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
+const WEAR_ORDER = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred', 'Vanilla'];
 
 interface SkinRow {
   id: string;
@@ -279,19 +279,40 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
 }
 
 function PriceCell({ variant }: { variant: VariantRow }) {
-  const hasPrice = variant.lowest_price_cents != null;
+  const hasListing = variant.lowest_price_cents != null;
+  const hasLastSold = variant.median_price_cents != null;
 
   return (
     <div>
-      <div className={hasPrice ? 'text-white font-medium' : 'text-zinc-500'}>
-        {formatPrice(variant.lowest_price_cents)}
-      </div>
-      {hasPrice && (
-        <div className="text-xs text-zinc-500 mt-0.5">
-          {variant.sell_listings != null && `${variant.sell_listings} listed`}
-          {variant.volume != null && ` / ${variant.volume} sold`}
+      {hasListing ? (
+        <div className="text-white font-medium">
+          {formatPrice(variant.lowest_price_cents)}
         </div>
+      ) : hasLastSold ? (
+        <div className="text-orange-400 font-medium" title="No active listings — showing last sold price">
+          {formatPrice(variant.median_price_cents)}
+        </div>
+      ) : (
+        <div className="text-zinc-500">-</div>
       )}
+      <div className="text-xs mt-0.5 space-x-1">
+        {hasLastSold && hasListing && (
+          <span className="text-zinc-500">Last sold: {formatPrice(variant.median_price_cents)}</span>
+        )}
+        {hasLastSold && !hasListing && (
+          <span className="text-orange-400/70">last sold</span>
+        )}
+        {!hasLastSold && hasListing && variant.sell_listings != null && (
+          <span className="text-zinc-500">
+            {variant.sell_listings} listed{variant.volume != null ? ` / ${variant.volume} sold` : ''}
+          </span>
+        )}
+        {hasLastSold && hasListing && variant.sell_listings != null && (
+          <span className="text-zinc-600">
+            / {variant.sell_listings} listed
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -347,8 +368,10 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                           <div key={s.id} className="flex items-center gap-2 text-sm">
                             {s.image_url && <img src={s.image_url} alt={s.name} className="w-10 h-7 object-contain" />}
                             <span className="text-zinc-300">{s.name}</span>
-                            <span className="text-zinc-500 ml-auto">
-                              {s.cheapest_price_cents != null ? formatPrice(s.cheapest_price_cents) : 'No price'}
+                            <span className={`ml-auto ${s.is_last_sold_price ? 'text-orange-400' : 'text-zinc-500'}`}>
+                              {s.cheapest_price_cents != null
+                                ? `${formatPrice(s.cheapest_price_cents)}${s.is_last_sold_price ? ' (last sold)' : ''}`
+                                : 'No price'}
                             </span>
                           </div>
                         ))}
@@ -364,8 +387,10 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                               {s.name}
                               {s.id === skinId && ' (target)'}
                             </span>
-                            <span className="text-zinc-500 ml-auto">
-                              {s.cheapest_price_cents != null ? formatPrice(s.cheapest_price_cents) : 'No price'}
+                            <span className={`ml-auto ${s.is_last_sold_price ? 'text-orange-400' : 'text-zinc-500'}`}>
+                              {s.cheapest_price_cents != null
+                                ? `${formatPrice(s.cheapest_price_cents)}${s.is_last_sold_price ? ' (last sold)' : ''}`
+                                : 'No price'}
                             </span>
                           </div>
                         ))}

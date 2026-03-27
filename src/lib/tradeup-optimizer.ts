@@ -102,6 +102,7 @@ interface OutputSkin {
   min_float: number;
   max_float: number;
   prices_by_wear: Record<string, number>; // wear_name -> lowest_price_cents
+  last_sold_by_wear: Record<string, number>; // wear_name -> median_price_cents (fallback)
 }
 
 export interface TradeupCombo {
@@ -131,9 +132,11 @@ export interface TradeupCombo {
     price_cents: number | null;
     image_url: string | null;
     is_target: boolean;
+    is_last_sold_price: boolean;
     expected_float: number;
     expected_wear: string;
   }[];
+  has_last_sold_prices: boolean;
 }
 
 export interface TradeupFinderResult {
@@ -431,6 +434,7 @@ function buildComboFromSlots(
   const costPerAttempt = Math.round(totalCost / targetProb);
 
   let ev = -totalCost;
+  let anyLastSold = false;
   const allOutcomes: TradeupCombo['all_outcomes'] = [];
 
   for (const [skinId, prob] of outcomeProbs) {
@@ -441,16 +445,36 @@ function buildComboFromSlots(
     const outputWear = floatToWear(outputFloat);
 
     let priceAtWear = output.prices_by_wear[outputWear] ?? null;
+    let isLastSold = false;
+
     if (priceAtWear === null) {
-      const availableWears = Object.entries(output.prices_by_wear);
-      if (availableWears.length > 0) {
-        priceAtWear = Math.min(...availableWears.map(([, p]) => p));
+      // Fallback 1: last sold price for the exact wear
+      priceAtWear = output.last_sold_by_wear[outputWear] ?? null;
+      if (priceAtWear !== null) isLastSold = true;
+    }
+
+    if (priceAtWear === null) {
+      // Fallback 2: cheapest listing price across any wear
+      const availableListings = Object.entries(output.prices_by_wear);
+      if (availableListings.length > 0) {
+        priceAtWear = Math.min(...availableListings.map(([, p]) => p));
+      }
+    }
+
+    if (priceAtWear === null) {
+      // Fallback 3: cheapest last sold across any wear
+      const availableLastSold = Object.entries(output.last_sold_by_wear);
+      if (availableLastSold.length > 0) {
+        priceAtWear = Math.min(...availableLastSold.map(([, p]) => p));
+        isLastSold = true;
       }
     }
 
     if (priceAtWear) {
       ev += priceAtWear * prob;
     }
+
+    if (isLastSold) anyLastSold = true;
 
     allOutcomes.push({
       skin_id: skinId,
@@ -460,6 +484,7 @@ function buildComboFromSlots(
       price_cents: priceAtWear,
       image_url: output.image_url,
       is_target: skinId === targetSkinId,
+      is_last_sold_price: isLastSold,
       expected_float: Math.round(outputFloat * 100000) / 100000,
       expected_wear: outputWear,
     });
@@ -499,6 +524,7 @@ function buildComboFromSlots(
     ev_cents: Math.round(ev),
     expected_avg_float: Math.round(avgTFloat * 100000) / 100000,
     all_outcomes: allOutcomes,
+    has_last_sold_prices: anyLastSold,
   };
 }
 
@@ -676,9 +702,11 @@ async function gatherOutputSkins(
 
   const results: OutputSkin[] = [];
   for (const row of rows) {
+    const { prices_by_wear, last_sold_by_wear } = await getWearPrices(row.skin_id, stattrakFilter);
     results.push({
       ...row,
-      prices_by_wear: await getWearPrices(row.skin_id, stattrakFilter),
+      prices_by_wear,
+      last_sold_by_wear,
     });
   }
   return results;
@@ -703,9 +731,11 @@ async function gatherOutputSkinsFromCrates(
 
   const results: OutputSkin[] = [];
   for (const row of rows) {
+    const { prices_by_wear, last_sold_by_wear } = await getWearPrices(row.skin_id, stattrakFilter);
     results.push({
       ...row,
-      prices_by_wear: await getWearPrices(row.skin_id, stattrakFilter),
+      prices_by_wear,
+      last_sold_by_wear,
     });
   }
   return results;
@@ -714,18 +744,23 @@ async function gatherOutputSkinsFromCrates(
 async function getWearPrices(
   skinId: string,
   stattrakFilter: boolean
-): Promise<Record<string, number>> {
-  const rows = await sql<{ wear_name: string; lowest_price_cents: number }[]>`
-    SELECT sv.wear_name, p.lowest_price_cents
+): Promise<{ prices_by_wear: Record<string, number>; last_sold_by_wear: Record<string, number> }> {
+  const rows = await sql<{ wear_name: string; lowest_price_cents: number | null; median_price_cents: number | null }[]>`
+    SELECT sv.wear_name, p.lowest_price_cents, p.median_price_cents
     FROM skin_variants sv
     JOIN prices p ON sv.market_hash_name = p.market_hash_name
     WHERE sv.skin_id = ${skinId} AND sv.is_stattrak = ${stattrakFilter} AND sv.is_souvenir = FALSE
-    AND p.lowest_price_cents IS NOT NULL
   `;
 
   const prices: Record<string, number> = {};
+  const lastSold: Record<string, number> = {};
   for (const row of rows) {
-    prices[row.wear_name] = row.lowest_price_cents;
+    if (row.lowest_price_cents != null && row.lowest_price_cents > 0) {
+      prices[row.wear_name] = row.lowest_price_cents;
+    }
+    if (row.median_price_cents != null && row.median_price_cents > 0) {
+      lastSold[row.wear_name] = row.median_price_cents;
+    }
   }
-  return prices;
+  return { prices_by_wear: prices, last_sold_by_wear: lastSold };
 }

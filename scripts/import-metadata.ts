@@ -217,17 +217,23 @@ async function main() {
   console.log('Importing skin variants...');
   let variantCount = 0;
   let skippedCount = 0;
+  let vanillaCount = 0;
   for (const variant of skinsNotGrouped) {
-    if (!variant.market_hash_name || !variant.wear) {
+    if (!variant.market_hash_name) {
       skippedCount++;
       continue;
     }
+
+    // Vanilla knives/gloves have wear: null — treat as a single "Vanilla" variant
+    const wearName = variant.wear?.name ?? 'Vanilla';
+    if (!variant.wear) vanillaCount++;
+
     await sql`
       INSERT INTO skin_variants (skin_id, market_hash_name, wear_name, is_stattrak, is_souvenir)
       VALUES (
         ${variant.skin_id},
         ${variant.market_hash_name},
-        ${variant.wear.name},
+        ${wearName},
         ${variant.stattrak ?? false},
         ${variant.souvenir ?? false}
       )
@@ -239,7 +245,7 @@ async function main() {
     `;
     variantCount++;
   }
-  console.log(`  Inserted ${variantCount} variants (skipped ${skippedCount} without market_hash_name)`);
+  console.log(`  Inserted ${variantCount} variants (${vanillaCount} vanilla, skipped ${skippedCount} without market_hash_name)`);
 
   // --- Verification ---
   console.log('\n=== Verification ===');

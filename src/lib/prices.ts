@@ -43,7 +43,13 @@ export async function refreshSinglePrice(marketHashName: string): Promise<{
     market_hash_name: marketHashName,
   });
 
-  const res = await fetch(`${PRICE_OVERVIEW_URL}?${params}`);
+  const res = await fetch(`${PRICE_OVERVIEW_URL}?${params}`, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  });
 
   if (res.status === 429) {
     console.warn(`Rate limited fetching price for ${marketHashName}`);
@@ -55,9 +61,19 @@ export async function refreshSinglePrice(marketHashName: string): Promise<{
     return null;
   }
 
-  const data = (await res.json()) as PriceOverviewResponse;
+  const text = await res.text();
+  let data: PriceOverviewResponse;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    console.warn(`Invalid JSON for ${marketHashName}: ${text.slice(0, 200)}`);
+    return null;
+  }
 
-  if (!data.success) return null;
+  if (!data.success) {
+    console.warn(`Steam returned success=false for ${marketHashName}`);
+    return null;
+  }
 
   const lowest = data.lowest_price ? parsePriceString(data.lowest_price) : null;
   const median = data.median_price ? parsePriceString(data.median_price) : null;

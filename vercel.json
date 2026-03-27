@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/scrape-prices",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/scrape-last-sold",
+      "schedule": "*/10 * * * *"
     }
   ]
 }
