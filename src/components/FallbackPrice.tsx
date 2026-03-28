@@ -40,7 +40,7 @@ export default function FallbackPrice({
     >
       <span className={fallbackClassName}>{formatPrice(priceCents)}{suffix}</span>
       <span className={fallbackClassName}>*</span>
-      <span className="pointer-events-none absolute bottom-full right-0 z-50 mb-2 hidden w-64 whitespace-normal rounded-lg border border-zinc-600 bg-zinc-900 px-3 py-2 text-left text-xs leading-snug text-zinc-200 shadow-lg group-hover:block group-focus-within:block">
+      <span className="pointer-events-none absolute top-full right-0 z-50 mt-2 hidden w-max max-w-xs whitespace-normal rounded-lg border border-zinc-600 bg-zinc-900 px-3 py-2 text-left text-xs leading-snug text-zinc-200 shadow-lg group-hover:block group-focus-within:block">
         {tooltipText}
       </span>
     </span>

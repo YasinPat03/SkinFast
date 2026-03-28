@@ -90,6 +90,7 @@ interface WearOption {
   price_cents: number;
   assumed_float: number;
   t_float: number;
+  is_last_sold_price: boolean;
 }
 
 interface InputCandidate {
@@ -129,6 +130,7 @@ export interface TradeupConcreteInput {
   weapon_name: string;
   wear_name: string;
   price_cents: number;
+  is_last_sold_price: boolean;
   collection_id: string;
   collection_name: string;
   market_hash_name: string;
@@ -146,6 +148,7 @@ export interface TradeupGroupedInput {
   weapon_name: string;
   wear_name: string;
   price_cents: number;
+  is_last_sold_price: boolean;
   collection_id: string;
   collection_name: string;
   market_hash_name: string;
@@ -393,6 +396,7 @@ export async function evaluateTradeupContract(
       weapon_name: skin.weapon_name,
       wear_name: input.wear_name,
       price_cents: input.price_cents,
+      is_last_sold_price: false,
       collection_id: input.collection_id,
       collection_name: input.collection_id,
       market_hash_name: input.market_hash_name,
@@ -569,6 +573,7 @@ function buildComboFromSlots(
       weapon_name: slot.candidate.weapon_name,
       wear_name: wear.wear_name,
       price_cents: wear.price_cents,
+      is_last_sold_price: wear.is_last_sold_price,
       collection_id: slot.candidate.collection_id,
       collection_name: slot.candidate.collection_name,
       market_hash_name: wear.market_hash_name,
@@ -709,6 +714,7 @@ function evaluateResolvedTradeup(
         weapon_name: input.weapon_name,
         wear_name: input.wear_name,
         price_cents: input.price_cents,
+        is_last_sold_price: input.is_last_sold_price,
         collection_id: input.collection_id,
         collection_name: input.collection_name,
         market_hash_name: input.market_hash_name,
@@ -881,26 +887,32 @@ async function buildCandidatesWithWears(
     if (seen.has(key)) continue;
     seen.add(key);
 
-    // Get all wears with prices for this skin
-    const wears = await sql<{ wear_name: string; market_hash_name: string; lowest_price_cents: number }[]>`
-      SELECT sv.wear_name, sv.market_hash_name, p.lowest_price_cents
+    // Get all wears with prices for this skin (fall back to last-sold if no active listing)
+    const wears = await sql<{ wear_name: string; market_hash_name: string; lowest_price_cents: number | null; median_price_cents: number | null }[]>`
+      SELECT sv.wear_name, sv.market_hash_name, p.lowest_price_cents, p.median_price_cents
       FROM skin_variants sv
       JOIN prices p ON sv.market_hash_name = p.market_hash_name
       WHERE sv.skin_id = ${row.skin_id} AND sv.is_stattrak = ${stattrakFilter} AND sv.is_souvenir = FALSE
-      AND p.lowest_price_cents IS NOT NULL AND p.lowest_price_cents > 0
+      AND (
+        (p.lowest_price_cents IS NOT NULL AND p.lowest_price_cents > 0)
+        OR (p.median_price_cents IS NOT NULL AND p.median_price_cents > 0)
+      )
     `;
 
     if (wears.length === 0) continue;
 
     const wearOptions: WearOption[] = wears.map((w) => {
+      const hasActiveListing = w.lowest_price_cents != null && w.lowest_price_cents > 0;
+      const priceToUse = hasActiveListing ? w.lowest_price_cents! : w.median_price_cents!;
       const estFloat = estimateFloat(w.wear_name, row.min_float, row.max_float);
       const tFloat = calculateTFloat(estFloat, row.min_float, row.max_float);
       return {
         wear_name: w.wear_name,
         market_hash_name: w.market_hash_name,
-        price_cents: w.lowest_price_cents,
+        price_cents: priceToUse,
         assumed_float: estFloat,
         t_float: tFloat,
+        is_last_sold_price: !hasActiveListing,
       };
     });
 

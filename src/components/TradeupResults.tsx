@@ -11,6 +11,7 @@ interface TradeupGroupedInput {
   weapon_name: string;
   wear_name: string;
   price_cents: number;
+  is_last_sold_price: boolean;
   collection_id: string;
   collection_name: string;
   market_hash_name: string;
@@ -25,6 +26,7 @@ interface TradeupConcreteInput {
   weapon_name: string;
   wear_name: string;
   price_cents: number;
+  is_last_sold_price: boolean;
   collection_id: string;
   collection_name: string;
   market_hash_name: string;
@@ -94,7 +96,7 @@ export default function TradeupResults({
   availableWears: string[];
 }) {
   const [wear, setWear] = useState(() => {
-    return availableWears.includes('Field-Tested') ? 'Field-Tested' : availableWears[0] ?? 'Field-Tested';
+    return WEAR_OPTIONS.find((w) => availableWears.includes(w)) ?? availableWears[0] ?? 'Factory New';
   });
   const [isStatTrak, setIsStatTrak] = useState(false);
   const [result, setResult] = useState<TradeupFinderResult | null>(null);
@@ -217,6 +219,7 @@ function TradeupCard({
   const [floatInputs, setFloatInputs] = useState(() => combo.concrete_inputs.map((input) => input.input_float.toFixed(5)));
   const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [evaluating, setEvaluating] = useState(false);
+  const [floatEditorOpen, setFloatEditorOpen] = useState(false);
   const evPositive = workingCombo.ev_cents >= 0;
 
   useEffect(() => {
@@ -307,7 +310,7 @@ function TradeupCard({
             EV: {evPositive ? '+' : ''}{formatPrice(workingCombo.ev_cents)}
             {workingCombo.has_last_sold_prices && <span className="text-orange-400">*</span>}
             {showEvTooltip && (
-              <span className="absolute bottom-full right-0 mb-2 w-64 px-3 py-2 text-xs text-zinc-200 bg-zinc-900 border border-zinc-600 rounded-lg shadow-lg z-50 font-normal text-left pointer-events-none">
+              <span className="absolute top-full right-0 mt-2 w-max max-w-xs px-3 py-2 text-xs text-zinc-200 bg-zinc-900 border border-zinc-600 rounded-lg shadow-lg z-50 font-normal text-left pointer-events-none">
                 EV may be skewed because one or more outcomes only had last-sold fallback pricing.
               </span>
             )}
@@ -334,26 +337,50 @@ function TradeupCard({
                     {input.quantity}x {input.skin_name}
                   </span>
                   <span className="text-zinc-500 text-xs">({input.wear_name})</span>
-                  <span className="text-zinc-400 ml-auto">
-                    {formatPrice(input.price_cents)} ea
+                  <span className="ml-auto">
+                    <FallbackPrice
+                      priceCents={input.price_cents}
+                      isLastSoldPrice={input.is_last_sold_price}
+                      normalClassName="text-zinc-400"
+                      fallbackClassName="text-orange-400"
+                      tooltipText="No active listings. Showing the last sold price."
+                      suffix=" ea"
+                    />
                   </span>
                 </div>
               ))}
             </div>
           </div>
 
-          <div className="mt-4 bg-zinc-900/40 border border-zinc-700 rounded-lg p-3">
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div className="mt-4 bg-zinc-900/40 border border-zinc-700 rounded-lg">
+            <button
+              onClick={() => setFloatEditorOpen((o) => !o)}
+              className="w-full flex items-center justify-between gap-3 p-3 text-left"
+            >
               <div>
                 <h4 className="text-xs uppercase tracking-wider text-zinc-500">Exact Float Inputs</h4>
-                <p className="text-xs text-zinc-500 mt-1">
-                  Edit the exact float for each slot and recalculate the contract with true float-level math.
-                </p>
               </div>
-              <div className="text-xs text-zinc-500">
-                Current source: {workingCombo.float_source === 'exact' ? 'exact floats' : 'wear assumptions'}
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-zinc-500">
+                  {workingCombo.float_source === 'exact' ? 'exact floats' : 'wear assumptions'}
+                </span>
+                <svg
+                  className={`w-4 h-4 text-zinc-500 transition-transform ${floatEditorOpen ? 'rotate-180' : ''}`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
               </div>
-            </div>
+            </button>
+
+            {floatEditorOpen && (
+            <div className="px-3 pb-3">
+            <p className="text-xs text-zinc-500 mb-3">
+              Edit the exact float for each slot and recalculate the contract with true float-level math.
+            </p>
 
             <div className="grid gap-2 md:grid-cols-2">
               {workingCombo.concrete_inputs.map((input, index) => (
@@ -408,6 +435,8 @@ function TradeupCard({
               <div className="mt-3 text-sm text-amber-400">
                 These exact floats do not land the target skin in {targetWear}. Target skin chance remains {(workingCombo.target_skin_probability * 100).toFixed(1)}%, but requested wear chance is 0%.
               </div>
+            )}
+            </div>
             )}
           </div>
 
