@@ -323,8 +323,13 @@ export async function findBestTradeup(
     return true;
   });
 
-  uniqueCombos.sort((a, b) => b.ev_cents - a.ev_cents);
-  const top5 = uniqueCombos.slice(0, 5).map((c, i) => ({ ...c, rank: i + 1 }));
+  // Prefer combos where estimated wear matches, but fall back to all combos
+  // (e.g. Factory New gloves need very low float inputs that midpoint estimates can't capture)
+  const wearMatching = uniqueCombos.filter((c) => c.target_matches_requested_wear);
+  const ranked = wearMatching.length > 0 ? wearMatching : uniqueCombos;
+
+  ranked.sort((a, b) => b.ev_cents - a.ev_cents);
+  const top5 = ranked.slice(0, 5).map((c, i) => ({ ...c, rank: i + 1 }));
 
   return {
     target: {
@@ -586,8 +591,48 @@ function buildComboFromSlots(
     };
   });
 
+  // If estimated midpoint floats don't land in the target wear, adjust input floats
+  // to the highest values that still produce the target wear (cheapest possible inputs)
+  const targetOutput = outputSkins.find((o) => o.skin_id === targetSkinId);
+  if (targetOutput && targetOutput.max_float > targetOutput.min_float) {
+    const currentAvgT = resolvedInputs.reduce((sum, i) => sum + i.normalized_float, 0) / numInputs;
+    const currentOutputFloat = calculateOutputFloat(currentAvgT, targetOutput.min_float, targetOutput.max_float);
+
+    if (floatToWear(currentOutputFloat) !== targetWear) {
+      const wearRange = WEAR_FLOAT_RANGES[targetWear];
+      if (wearRange && wearRange[1] > targetOutput.min_float && wearRange[0] < targetOutput.max_float) {
+        // Highest output float that still lands in the target wear
+        const goalOutputFloat = Math.min(wearRange[1] - 0.00001, targetOutput.max_float);
+        const goalAvgT = (goalOutputFloat - targetOutput.min_float) / (targetOutput.max_float - targetOutput.min_float);
+
+        if (goalAvgT >= 0 && goalAvgT <= 1) {
+          // Verify each input can hit goalAvgT within its selected wear range
+          let allValid = true;
+          for (const input of resolvedInputs) {
+            const requiredFloat = goalAvgT * (input.max_float - input.min_float) + input.min_float;
+            const wearBounds = WEAR_FLOAT_RANGES[input.wear_name];
+            if (!wearBounds) { allValid = false; break; }
+            const effectiveMin = Math.max(wearBounds[0], input.min_float);
+            const effectiveMax = Math.min(wearBounds[1], input.max_float);
+            if (effectiveMin >= effectiveMax || requiredFloat < effectiveMin || requiredFloat >= effectiveMax) {
+              allValid = false;
+              break;
+            }
+          }
+
+          if (allValid) {
+            for (const input of resolvedInputs) {
+              input.input_float = goalAvgT * (input.max_float - input.min_float) + input.min_float;
+              input.normalized_float = goalAvgT;
+            }
+          }
+        }
+      }
+    }
+  }
+
   const combo = evaluateResolvedTradeup(resolvedInputs, targetSkinId, targetWear, outputSkins, numInputs);
-  if (!combo || !combo.target_matches_requested_wear || combo.probability <= 0) {
+  if (!combo || combo.target_skin_probability <= 0) {
     return null;
   }
 

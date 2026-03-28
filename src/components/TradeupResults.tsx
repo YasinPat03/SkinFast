@@ -219,7 +219,7 @@ function TradeupCard({
   const [floatInputs, setFloatInputs] = useState(() => combo.concrete_inputs.map((input) => input.input_float.toFixed(5)));
   const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [evaluating, setEvaluating] = useState(false);
-  const [floatEditorOpen, setFloatEditorOpen] = useState(false);
+  const [floatEditorOpen, setFloatEditorOpen] = useState(!combo.target_matches_requested_wear);
   const evPositive = workingCombo.ev_cents >= 0;
 
   useEffect(() => {
@@ -323,6 +323,12 @@ function TradeupCard({
 
       {expanded && (
         <div className="px-4 pb-4 border-t border-zinc-700/50">
+          {!workingCombo.target_matches_requested_wear && (
+            <div className="mt-3 text-sm text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
+              With estimated floats, this tradeup lands in {workingCombo.all_outcomes.find((o) => o.is_target)?.expected_wear ?? 'a different wear'} instead of {targetWear}.
+              Use the float editor below to set exact low-float inputs to reach {targetWear}.
+            </div>
+          )}
           <div className="mt-3">
             <h4 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">
               Inputs - {formatPrice(workingCombo.total_cost_cents)} total
