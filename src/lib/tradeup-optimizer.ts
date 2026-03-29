@@ -601,12 +601,16 @@ function buildComboFromSlots(
     if (floatToWear(currentOutputFloat) !== targetWear) {
       const wearRange = WEAR_FLOAT_RANGES[targetWear];
       if (wearRange && wearRange[1] > targetOutput.min_float && wearRange[0] < targetOutput.max_float) {
-        // Highest output float that still lands in the target wear
-        const goalOutputFloat = Math.min(wearRange[1] - 0.00001, targetOutput.max_float);
+        // Use the midpoint of the target wear range (clamped to skin's float range)
+        // instead of the maximum — this produces realistic input float requirements
+        const clampedWearMin = Math.max(wearRange[0], targetOutput.min_float);
+        const clampedWearMax = Math.min(wearRange[1], targetOutput.max_float);
+        const goalOutputFloat = (clampedWearMin + clampedWearMax) / 2;
         const goalAvgT = (goalOutputFloat - targetOutput.min_float) / (targetOutput.max_float - targetOutput.min_float);
 
         if (goalAvgT >= 0 && goalAvgT <= 1) {
-          // Verify each input can hit goalAvgT within its selected wear range
+          // Verify each input can hit goalAvgT within a realistic portion of its wear range
+          // (not at the extreme edges — require at least 15% into the range)
           let allValid = true;
           for (const input of resolvedInputs) {
             const requiredFloat = goalAvgT * (input.max_float - input.min_float) + input.min_float;
@@ -614,7 +618,9 @@ function buildComboFromSlots(
             if (!wearBounds) { allValid = false; break; }
             const effectiveMin = Math.max(wearBounds[0], input.min_float);
             const effectiveMax = Math.min(wearBounds[1], input.max_float);
-            if (effectiveMin >= effectiveMax || requiredFloat < effectiveMin || requiredFloat >= effectiveMax) {
+            const rangeSize = effectiveMax - effectiveMin;
+            const margin = rangeSize * 0.15;
+            if (effectiveMin >= effectiveMax || requiredFloat < effectiveMin + margin || requiredFloat >= effectiveMax - margin) {
               allValid = false;
               break;
             }
