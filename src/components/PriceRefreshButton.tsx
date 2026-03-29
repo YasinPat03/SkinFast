@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 
 export default function PriceRefreshButton({
@@ -12,9 +12,8 @@ export default function PriceRefreshButton({
 }) {
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
+  const hasAutoRefreshed = useRef(false);
   const router = useRouter();
-
-  if (!isStale || marketHashNames.length === 0) return null;
 
   async function handleRefresh() {
     setLoading(true);
@@ -25,7 +24,6 @@ export default function PriceRefreshButton({
         body: JSON.stringify({ market_hash_names: marketHashNames }),
       });
       setDone(true);
-      // Refresh the page to show updated prices
       router.refresh();
     } catch {
       // silently fail
@@ -34,19 +32,34 @@ export default function PriceRefreshButton({
     }
   }
 
+  // Auto-refresh stale prices on page load
+  useEffect(() => {
+    if (isStale && marketHashNames.length > 0 && !hasAutoRefreshed.current) {
+      hasAutoRefreshed.current = true;
+      handleRefresh();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!isStale || marketHashNames.length === 0) return null;
+
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="text-yellow-500">Prices may be outdated</span>
       {!done ? (
-        <button
-          onClick={handleRefresh}
-          disabled={loading}
-          className="text-blue-400 hover:text-blue-300 underline disabled:text-zinc-500 disabled:no-underline"
-        >
-          {loading ? 'Refreshing...' : 'Refresh now'}
-        </button>
+        <>
+          <span className="text-yellow-500">
+            {loading ? 'Updating prices...' : 'Prices may be outdated'}
+          </span>
+          {!loading && (
+            <button
+              onClick={handleRefresh}
+              className="text-blue-400 hover:text-blue-300 underline"
+            >
+              Refresh now
+            </button>
+          )}
+        </>
       ) : (
-        <span className="text-green-400">Updated</span>
+        <span className="text-green-400">Prices updated</span>
       )}
     </div>
   );
