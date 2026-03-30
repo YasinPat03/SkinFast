@@ -375,14 +375,6 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                           <div key={s.id} className="flex items-center gap-2 text-sm">
                             {s.image_url && <img src={s.image_url} alt={s.name} className="w-10 h-7 object-contain" />}
                             <span className="text-zinc-300">{s.name}</span>
-                            <span className="ml-auto">
-                              <FallbackPrice
-                                priceCents={s.cheapest_price_cents}
-                                isLastSoldPrice={s.is_last_sold_price}
-                                normalClassName="text-zinc-500"
-                                fallbackClassName="text-orange-400"
-                              />
-                            </span>
                           </div>
                         ))}
                       </div>
@@ -396,14 +388,6 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                             <span className={s.id === skinId ? 'text-green-400 font-medium' : 'text-zinc-300'}>
                               {s.name}
                               {s.id === skinId && ' (target)'}
-                            </span>
-                            <span className="ml-auto">
-                              <FallbackPrice
-                                priceCents={s.cheapest_price_cents}
-                                isLastSoldPrice={s.is_last_sold_price}
-                                normalClassName="text-zinc-500"
-                                fallbackClassName="text-orange-400"
-                              />
                             </span>
                           </div>
                         ))}
