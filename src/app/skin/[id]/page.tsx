@@ -191,45 +191,48 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
               </tr>
             </thead>
             <tbody>
-              {WEAR_ORDER.map((wear) => {
-                const normal = getVariantByWear(variantTypes.normal, wear);
-                const stattrak = getVariantByWear(variantTypes.stattrak, wear);
-                const souvenir = getVariantByWear(variantTypes.souvenir, wear);
+              {WEAR_ORDER
+                .map((wear) => ({
+                  wear,
+                  normal: getVariantByWear(variantTypes.normal, wear),
+                  stattrak: getVariantByWear(variantTypes.stattrak, wear),
+                  souvenir: getVariantByWear(variantTypes.souvenir, wear),
+                }))
+                .filter(({ normal, stattrak, souvenir }) => normal || stattrak || souvenir)
+                .map(({ wear, normal, stattrak, souvenir }, index, visibleRows) => {
+                  const tooltipPlacement = index === visibleRows.length - 1 ? 'top' : 'bottom';
 
-                // Skip wear rows where no variant exists at all
-                if (!normal && !stattrak && !souvenir) return null;
-
-                return (
-                  <tr key={wear} className="border-b border-zinc-800 hover:bg-zinc-800/50">
-                    <td className="py-3 px-3 text-zinc-300">{wear}</td>
-                    <td className="py-3 px-3 text-right">
-                      {normal ? (
-                        <PriceCell variant={normal} />
-                      ) : (
-                        <span className="text-zinc-600">-</span>
+                  return (
+                    <tr key={wear} className="border-b border-zinc-800 hover:bg-zinc-800/50">
+                      <td className="py-3 px-3 text-zinc-300">{wear}</td>
+                      <td className="py-3 px-3 text-right">
+                        {normal ? (
+                          <PriceCell variant={normal} tooltipPlacement={tooltipPlacement} />
+                        ) : (
+                          <span className="text-zinc-600">-</span>
+                        )}
+                      </td>
+                      {hasStatTrak && (
+                        <td className="py-3 px-3 text-right">
+                          {stattrak ? (
+                            <PriceCell variant={stattrak} tooltipPlacement={tooltipPlacement} />
+                          ) : (
+                            <span className="text-zinc-600">-</span>
+                          )}
+                        </td>
                       )}
-                    </td>
-                    {hasStatTrak && (
-                      <td className="py-3 px-3 text-right">
-                        {stattrak ? (
-                          <PriceCell variant={stattrak} />
-                        ) : (
-                          <span className="text-zinc-600">-</span>
-                        )}
-                      </td>
-                    )}
-                    {hasSouvenir && (
-                      <td className="py-3 px-3 text-right">
-                        {souvenir ? (
-                          <PriceCell variant={souvenir} />
-                        ) : (
-                          <span className="text-zinc-600">-</span>
-                        )}
-                      </td>
-                    )}
-                  </tr>
-                );
-              })}
+                      {hasSouvenir && (
+                        <td className="py-3 px-3 text-right">
+                          {souvenir ? (
+                            <PriceCell variant={souvenir} tooltipPlacement={tooltipPlacement} />
+                          ) : (
+                            <span className="text-zinc-600">-</span>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
         </div>
@@ -281,7 +284,13 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
   );
 }
 
-function PriceCell({ variant }: { variant: VariantRow }) {
+function PriceCell({
+  variant,
+  tooltipPlacement = 'bottom',
+}: {
+  variant: VariantRow;
+  tooltipPlacement?: 'top' | 'bottom';
+}) {
   const hasListing = variant.lowest_price_cents != null;
   const hasLastSold = variant.median_price_cents != null;
 
@@ -300,6 +309,7 @@ function PriceCell({ variant }: { variant: VariantRow }) {
             fallbackClassName="text-orange-400"
             nullClassName="text-zinc-500"
             nullLabel="-"
+            tooltipPlacement={tooltipPlacement}
           />
         </div>
       ) : (

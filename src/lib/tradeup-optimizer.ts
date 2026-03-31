@@ -6,6 +6,14 @@ import {
   hasTradeupExcludedCollection,
   isTradeupExcludedCollectionId,
 } from './tradeup-rules';
+import {
+  calculateOutputFloat,
+  calculateTFloat,
+  estimateFloat,
+  floatToWear,
+  WEAR_FLOAT_RANGES,
+  WEAR_ORDER,
+} from './tradeup-floats';
 
 // ── Knife/Glove Detection ─────────────────────────────────────────
 
@@ -31,45 +39,6 @@ function isKnifeSkin(weaponName: string): boolean {
 }
 
 // ── Float Utilities ───────────────────────────────────────────────
-
-const WEAR_FLOAT_RANGES: Record<string, [number, number]> = {
-  'Factory New': [0.00, 0.07],
-  'Minimal Wear': [0.07, 0.15],
-  'Field-Tested': [0.15, 0.38],
-  'Well-Worn': [0.38, 0.45],
-  'Battle-Scarred': [0.45, 1.00],
-};
-
-const WEAR_ORDER = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
-
-/** Estimate the actual float for a skin at a given wear, clamped to the skin's float range */
-function estimateFloat(wearName: string, skinMinFloat: number, skinMaxFloat: number): number {
-  const range = WEAR_FLOAT_RANGES[wearName];
-  if (!range) return (skinMinFloat + skinMaxFloat) / 2;
-  const clampedMin = Math.max(range[0], skinMinFloat);
-  const clampedMax = Math.min(range[1], skinMaxFloat);
-  return (clampedMin + clampedMax) / 2;
-}
-
-/** Compute normalized trade float: t = (actual - min) / (max - min) */
-function calculateTFloat(actualFloat: number, minFloat: number, maxFloat: number): number {
-  if (maxFloat <= minFloat) return 0;
-  return (actualFloat - minFloat) / (maxFloat - minFloat);
-}
-
-/** Compute output float from average trade float */
-function calculateOutputFloat(avgTFloat: number, outMinFloat: number, outMaxFloat: number): number {
-  return avgTFloat * (outMaxFloat - outMinFloat) + outMinFloat;
-}
-
-/** Map a float value to its wear condition */
-function floatToWear(f: number): string {
-  if (f < 0.07) return 'Factory New';
-  if (f < 0.15) return 'Minimal Wear';
-  if (f < 0.38) return 'Field-Tested';
-  if (f < 0.45) return 'Well-Worn';
-  return 'Battle-Scarred';
-}
 
 // ── Types ─────────────────────────────────────────────────────────
 

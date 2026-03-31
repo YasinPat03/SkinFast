@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
-import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -35,8 +34,13 @@ export default function RootLayout({
             <Link href="/" className="text-lg font-bold text-white hover:text-zinc-300 transition-colors">
               SkinFast
             </Link>
-            <nav className="text-sm text-zinc-400">
-              CS2 Prices & Tradeups
+            <nav className="flex items-center gap-4 text-sm">
+              <Link href="/tradeups" className="text-zinc-400 hover:text-white transition-colors">
+                Best Tradeups
+              </Link>
+              <span className="hidden sm:inline text-zinc-600">
+                CS2 Prices & Tradeups
+              </span>
             </nav>
           </div>
         </header>
@@ -44,7 +48,6 @@ export default function RootLayout({
         <footer className="border-t border-zinc-800 px-4 py-4 text-center text-xs text-zinc-600">
           Prices from Steam Community Market. Not affiliated with Valve.
         </footer>
-        <Analytics />
       </body>
     </html>
   );

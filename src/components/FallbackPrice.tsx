@@ -7,6 +7,7 @@ interface FallbackPriceProps {
   nullLabel?: string;
   suffix?: string;
   tooltipText?: string;
+  tooltipPlacement?: 'top' | 'bottom';
 }
 
 function formatPrice(cents: number | null): string {
@@ -23,6 +24,7 @@ export default function FallbackPrice({
   nullLabel = 'No price',
   suffix = '',
   tooltipText = 'No active listings. Showing the last sold price.',
+  tooltipPlacement = 'bottom',
 }: FallbackPriceProps) {
   if (priceCents == null) {
     return <span className={nullClassName}>{nullLabel}</span>;
@@ -32,6 +34,10 @@ export default function FallbackPrice({
     return <span className={normalClassName}>{formatPrice(priceCents)}{suffix}</span>;
   }
 
+  const tooltipPositionClassName = tooltipPlacement === 'top'
+    ? 'bottom-full right-0 mb-2'
+    : 'top-full right-0 mt-2';
+
   return (
     <span
       className="group relative inline-flex items-center gap-0.5 whitespace-nowrap cursor-help outline-none"
@@ -40,7 +46,7 @@ export default function FallbackPrice({
     >
       <span className={fallbackClassName}>{formatPrice(priceCents)}{suffix}</span>
       <span className={fallbackClassName}>*</span>
-      <span className="pointer-events-none absolute top-full right-0 z-50 mt-2 hidden w-max max-w-xs whitespace-normal rounded-lg border border-zinc-600 bg-zinc-900 px-3 py-2 text-left text-xs leading-snug text-zinc-200 shadow-lg group-hover:block group-focus-within:block">
+      <span className={`pointer-events-none absolute z-50 hidden w-max max-w-xs whitespace-normal rounded-lg border border-zinc-600 bg-zinc-900 px-3 py-2 text-left text-xs leading-snug text-zinc-200 shadow-lg group-hover:block group-focus-within:block ${tooltipPositionClassName}`}>
         {tooltipText}
       </span>
     </span>
