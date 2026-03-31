@@ -19,7 +19,7 @@ export default function Home() {
             href="/tradeups"
             className="rounded-lg border border-zinc-700 bg-zinc-900/70 px-4 py-2 text-sm text-zinc-200 transition-colors hover:border-zinc-500 hover:text-white"
           >
-            Browse Best EV Tradeups
+            Browse Best Tradeups
           </Link>
         </div>
         <div className="flex gap-6 text-xs text-zinc-600">

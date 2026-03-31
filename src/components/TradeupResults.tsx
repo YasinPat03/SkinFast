@@ -183,7 +183,6 @@ export default function TradeupResults({
           {result.tradeups.length === 0 ? (
             <p className="text-zinc-400 text-sm py-4">
               No tradeup combinations found. This may be because input skins do not have price data yet.
-              Run the price scraper to populate prices.
             </p>
           ) : (
             result.tradeups.map((combo) => (
@@ -294,7 +293,7 @@ function TradeupCard({
           <div>
             <span className="text-white font-medium">
               {formatPrice(workingCombo.cost_per_attempt_cents)}
-              {workingCombo.cost_per_attempt_cents != null ? ' per attempt' : ' requested target not hit'}
+              {workingCombo.cost_per_attempt_cents != null ? ' for each hit' : ' requested target not hit'}
             </span>
             <span className="text-zinc-400 text-sm ml-2">
               ({(workingCombo.probability * 100).toFixed(1)}% requested wear chance)

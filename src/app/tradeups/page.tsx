@@ -4,7 +4,7 @@ import FallbackPrice from '@/components/FallbackPrice';
 import { getTradeupLeaderboard, type TradeupLeaderboardEntry } from '@/lib/tradeup-leaderboard';
 
 export const metadata = {
-  title: 'Best EV Tradeups | SkinFast',
+  title: 'Best Tradeups | SkinFast',
   description: 'Browse the best expected-value CS2 tradeup contracts using Steam Community Market price data.',
 };
 
@@ -47,7 +47,7 @@ export default async function TradeupsPage({
           <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
             <div className="space-y-2">
               <p className="text-xs font-medium uppercase tracking-[0.24em] text-zinc-500">
-                Steam Marketplace EV
+                Steam Marketplace
               </p>
               <h1 className="text-3xl font-semibold text-white">
                 Best Tradeup Contracts
@@ -55,13 +55,12 @@ export default async function TradeupsPage({
               <p className="max-w-3xl text-sm leading-6 text-zinc-400">
                 Ranked by expected value using cached Steam Community Market prices. This leaderboard evaluates
                 identical-input contracts: 10x of the same skin for standard tradeups, or 5x for knife and glove
-                tradeups. Output estimates use the selected input wear midpoint, and the leaderboard will not show
-                a better wear tier than the inputs.
+                tradeups. Output estimates use the selected input wear.
               </p>
             </div>
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-4 py-3 text-sm text-zinc-400">
               <div>{leaderboard.total_matches.toLocaleString()} contracts match the current filter.</div>
-              <div className="text-zinc-500">Showing the top {leaderboard.entries.length} by EV.</div>
+              <div className="text-zinc-500">Showing the top {leaderboard.entries.length} by Expected Value.</div>
             </div>
           </div>
 
@@ -209,7 +208,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
               <div>
                 <div className="text-xs uppercase tracking-[0.24em] text-zinc-500">Top outcomes</div>
                 <div className="text-sm text-zinc-400">
-                  Estimated from the input wear midpoint with conservative wear matching.
+                  Estimated from input wear.
                 </div>
               </div>
               {entry.has_last_sold_prices && (
