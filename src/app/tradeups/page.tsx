@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import SearchBar from '@/components/SearchBar';
-import FallbackPrice from '@/components/FallbackPrice';
 import { getTradeupLeaderboard, type TradeupLeaderboardEntry } from '@/lib/tradeup-leaderboard';
+import { ScrambleText } from "@/components/unlumen-ui/scramble-text";
 
 export const metadata = {
   title: 'Best Tradeups | SkinFast',
@@ -50,7 +50,7 @@ export default async function TradeupsPage({
                 Steam Marketplace
               </p>
               <h1 className="text-3xl font-semibold text-white">
-                Best Tradeup Contracts
+                <ScrambleText text="Best Tradeup Contracts"/>
               </h1>
               <p className="max-w-3xl text-sm leading-6 text-zinc-400">
                 Ranked by expected value using cached Steam Community Market prices. This leaderboard evaluates
@@ -165,7 +165,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                   href={`/skin/${entry.input.skin_id}`}
                   className="block text-xl font-semibold text-white transition-colors hover:text-blue-300"
                 >
-                  {entry.num_inputs}x {entry.input.skin_name}
+                  <ScrambleText text={`${entry.num_inputs}x ${entry.input.skin_name}`}/>
                 </Link>
                 <div className="text-sm text-zinc-400">
                   {entry.input.weapon_name} / {entry.input.wear_name}
@@ -179,24 +179,19 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
 
           <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[360px]">
             <Metric label="Total cost">
-              <FallbackPrice
-                priceCents={entry.total_cost_cents}
-                normalClassName="text-white"
-                fallbackClassName="text-white"
-                nullClassName="text-white"
-              />
+              <span className="text-white"><ScrambleText text={formatPrice(entry.total_cost_cents)} scrambleSpeed={75}delay={400}/></span>
             </Metric>
             <Metric label="Estimated return">
-              <span className="text-white">{formatPrice(entry.expected_return_cents)}</span>
+              <span className="text-white"><ScrambleText text={formatPrice(entry.expected_return_cents)} scrambleSpeed={75}delay={400}/></span>
             </Metric>
             <Metric label="Estimated value">
               <span className={evPositive ? 'text-green-400' : 'text-red-400'}>
-                {evPositive ? '+' : ''}{formatPrice(entry.ev_cents)}
+                {evPositive ? '+' : ''}{<ScrambleText text={formatPrice(entry.ev_cents)} scrambleSpeed={75}delay={400}/>}
               </span>
             </Metric>
             <Metric label="Estimated ROI">
               <span className={evPositive ? 'text-green-400' : 'text-red-400'}>
-                {entry.roi_percent > 0 ? '+' : ''}{entry.roi_percent.toFixed(2)}%
+                {entry.roi_percent > 0 ? '+' : ''}{<ScrambleText text={entry.roi_percent.toFixed(2)} scrambleSpeed={75}delay={400}/>}%
               </span>
             </Metric>
           </div>
@@ -235,20 +230,13 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                     )}
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium text-white">
-                        {outcome.skin_name}
+                        <ScrambleText text={outcome.skin_name} scrambleSpeed={75} delay={400}/>
                       </div>
                       <div className="text-xs text-zinc-500">
                         Est. {outcome.expected_wear} / {(outcome.probability * 100).toFixed(1)}%
                       </div>
-                      <div className="mt-2 text-sm">
-                        <FallbackPrice
-                          priceCents={outcome.price_cents}
-                          isLastSoldPrice={outcome.is_last_sold_price}
-                          normalClassName="text-zinc-300"
-                          fallbackClassName="text-orange-400"
-                          nullClassName="text-zinc-500"
-                          nullLabel="-"
-                        />
+                      <div className="mt-2 text-sm text-zinc-300">
+                        <ScrambleText text={formatPrice(outcome.price_cents)} scrambleSpeed={75} delay={400}/>
                       </div>
                     </div>
                   </div>
@@ -262,29 +250,23 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
             <div className="mt-3 text-sm text-zinc-400">
               <div className="flex items-center justify-between gap-3">
                 <span>Per input</span>
-                <FallbackPrice
-                  priceCents={entry.input.price_cents}
-                  isLastSoldPrice={entry.input.is_last_sold_price}
-                  normalClassName="text-zinc-300"
-                  fallbackClassName="text-orange-400"
-                  nullClassName="text-zinc-500"
-                />
+                <span className="text-zinc-300"><ScrambleText text={formatPrice(entry.input.price_cents)} scrambleSpeed={75} delay={400}/></span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3">
                 <span>Wear</span>
-                <span className="text-zinc-300">{entry.input.wear_name}</span>
+                <span className="text-zinc-300"><ScrambleText text={entry.input.wear_name} scrambleSpeed={75} delay={400}/></span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3">
                 <span>Estimated avg float</span>
-                <span className="text-zinc-300">{entry.input.expected_float.toFixed(5)}</span>
+                <span className="text-zinc-300"><ScrambleText text={entry.input.expected_float.toFixed(5)} scrambleSpeed={75} delay={400}/></span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3">
                 <span>Contract size</span>
-                <span className="text-zinc-300">{entry.num_inputs} inputs</span>
+                <span className="text-zinc-300"><ScrambleText text={`${entry.num_inputs} inputs`} scrambleSpeed={75} delay={400}/></span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3">
                 <span>Best priced outcome</span>
-                <span className="text-zinc-300">{formatPrice(entry.best_outcome_price_cents)}</span>
+                <span className="text-zinc-300"><ScrambleText text={formatPrice(entry.best_outcome_price_cents)} scrambleSpeed={75} delay={400}/></span>
               </div>
             </div>
           </div>
@@ -319,14 +301,9 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                       Est. {outcome.expected_wear} / avg float {outcome.expected_float.toFixed(5)} / {(outcome.probability * 100).toFixed(1)}% chance
                     </div>
                   </div>
-                  <FallbackPrice
-                    priceCents={outcome.price_cents}
-                    isLastSoldPrice={outcome.is_last_sold_price}
-                    normalClassName="text-zinc-300"
-                    fallbackClassName="text-orange-400"
-                    nullClassName="text-zinc-500"
-                    nullLabel="-"
-                  />
+                  <span className="text-zinc-300">
+                    <ScrambleText text={formatPrice(outcome.price_cents)} scrambleSpeed={75} delay={400}/>
+                  </span>
                 </div>
               ))}
             </div>

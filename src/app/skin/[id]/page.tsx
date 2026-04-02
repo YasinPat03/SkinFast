@@ -6,6 +6,7 @@ import SearchBar from '@/components/SearchBar';
 import TradeupResults from '@/components/TradeupResults';
 import PriceRefreshButton from '@/components/PriceRefreshButton';
 import FallbackPrice from '@/components/FallbackPrice';
+import { ScrambleText } from "@/components/unlumen-ui/scramble-text";
 
 const RARITY_COLORS: Record<string, string> = {
   rarity_common_weapon: '#b0c3d9',
@@ -156,7 +157,7 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
             />
           )}
           <div>
-            <h1 className="text-2xl font-bold text-white">{skin.name}</h1>
+            <h1 className="text-2xl font-bold text-white"><ScrambleText text={skin.name}/></h1>
             <p className="text-sm mt-1" style={{ color: rarityColor }}>
               {skin.rarity_name}
             </p>
@@ -298,7 +299,7 @@ function PriceCell({
     <div>
       {hasListing ? (
         <div className="text-white font-medium">
-          {formatPrice(variant.lowest_price_cents)}
+          <ScrambleText text={formatPrice(variant.lowest_price_cents)} scrambleSpeed={75}delay={400} />
         </div>
       ) : hasLastSold ? (
         <div className="font-medium">
@@ -317,7 +318,7 @@ function PriceCell({
       )}
       <div className="text-xs mt-0.5 space-x-1">
         {hasLastSold && hasListing && (
-          <span className="text-zinc-500">Last sold: {formatPrice(variant.median_price_cents)}</span>
+          <span className="text-zinc-500">Last sold: <ScrambleText text={formatPrice(variant.median_price_cents)} scrambleSpeed={75}delay={400}/></span>
         )}
         {!hasLastSold && hasListing && variant.sell_listings != null && (
           <span className="text-zinc-500">

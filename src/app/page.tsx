@@ -1,4 +1,5 @@
 import SearchBar from '@/components/SearchBar';
+import { ScrambleText } from "@/components/unlumen-ui/scramble-text";
 
 export default function Home() {
   return (
@@ -7,10 +8,10 @@ export default function Home() {
         <div className="flex flex-col items-center gap-8 w-full max-w-2xl">
           <div className="text-center">
             <h1 className="text-5xl font-bold text-white tracking-tight mb-3">
-              SkinFast
+              <ScrambleText text="SkinFast" delay={400} scrambleSpeed={75}/>
             </h1>
             <p className="text-zinc-400 text-lg">
-              CS2 skin prices and tradeup calculator
+              <ScrambleText text="CS2 skin prices and tradeup calculator" delay={400} scrambleSpeed={75}/>
             </p>
           </div>
           <SearchBar />
