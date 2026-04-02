@@ -145,7 +145,7 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
     <div className="flex flex-col flex-1 items-center px-4 py-8 gap-8">
       <SearchBar />
 
-      <div className="w-full max-w-4xl">
+      <div className="w-full max-w-4xl rounded-xl border border-zinc-700/50 bg-zinc-900/60 backdrop-blur-sm p-6 sm:p-8">
         {/* Skin header */}
         <div className="flex flex-col sm:flex-row items-center gap-6 mb-8">
           {skin.image_url && (
