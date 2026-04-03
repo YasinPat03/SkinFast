@@ -2,6 +2,7 @@ import Link from 'next/link';
 import SearchBar from '@/components/SearchBar';
 import { getTradeupLeaderboard, type TradeupLeaderboardEntry } from '@/lib/tradeup-leaderboard';
 import { ScrambleText } from "@/components/unlumen-ui/scramble-text";
+import CostFilterForm from '@/components/CostFilterForm';
 
 export const metadata = {
   title: 'Best Tradeups | SkinFast',
@@ -64,48 +65,10 @@ export default async function TradeupsPage({
             </div>
           </div>
 
-          <form className="grid gap-4 rounded-xl border border-zinc-800 bg-zinc-950/70 p-4 md:grid-cols-[1fr_1fr_auto]">
-            <label className="space-y-2 text-sm">
-              <span className="text-zinc-400">Minimum total contract cost</span>
-              <input
-                name="minCost"
-                type="number"
-                min="0"
-                step="0.01"
-                defaultValue={params.minCost ?? ''}
-                placeholder="0.00"
-                className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-white placeholder:text-zinc-500 focus:border-blue-500 focus:outline-none"
-              />
-            </label>
-
-            <label className="space-y-2 text-sm">
-              <span className="text-zinc-400">Maximum total contract cost</span>
-              <input
-                name="maxCost"
-                type="number"
-                min="0"
-                step="0.01"
-                defaultValue={params.maxCost ?? ''}
-                placeholder="Any"
-                className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-white placeholder:text-zinc-500 focus:border-blue-500 focus:outline-none"
-              />
-            </label>
-
-            <div className="flex items-end gap-3">
-              <button
-                type="submit"
-                className="h-11 rounded-lg bg-blue-600 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-700"
-              >
-                Apply Filter
-              </button>
-              <Link
-                href="/tradeups"
-                className="h-11 rounded-lg border border-zinc-700 px-4 text-sm font-medium leading-[42px] text-zinc-300 transition-colors hover:border-zinc-500 hover:text-white"
-              >
-                Reset
-              </Link>
-            </div>
-          </form>
+          <CostFilterForm
+            defaultMinCost={params.minCost}
+            defaultMaxCost={params.maxCost}
+          />
         </section>
 
         {leaderboard.entries.length === 0 ? (

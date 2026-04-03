@@ -2,6 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { ScrambleText } from './unlumen-ui/scramble-text';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 type FloatSource = 'wear_assumption' | 'exact';
 
@@ -132,15 +139,16 @@ export default function TradeupResults({
       <div className="flex flex-wrap items-center gap-4 mb-4">
         <div className="flex items-center gap-2">
           <label className="text-sm text-zinc-400">Target wear:</label>
-          <select
-            value={wear}
-            onChange={(e) => setWear(e.target.value)}
-            className="bg-zinc-800 border border-zinc-700 text-white text-sm rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
-          >
-            {WEAR_OPTIONS.filter((option) => availableWears.includes(option)).map((option) => (
-              <option key={option} value={option}>{option}</option>
-            ))}
-          </select>
+          <Select value={wear} onValueChange={setWear}>
+            <SelectTrigger className="border-zinc-700 bg-zinc-800 text-white hover:bg-zinc-700">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="item-aligned">
+              {WEAR_OPTIONS.filter((option) => availableWears.includes(option)).map((option) => (
+                <SelectItem key={option} value={option}>{option}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         {hasStatTrak && (
