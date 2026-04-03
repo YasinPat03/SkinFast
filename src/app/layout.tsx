@@ -22,7 +22,7 @@ export default function RootLayout({
       <body className="min-h-full bg-zinc-950 text-zinc-100">
         <div className="fixed inset-0 -z-10">
           <LiquidChrome
-            color="#C0C0C0"
+            color="#a171c1"
             color2="#4A4A4A"
             speed={0.35}
             timeScale={0.225}
@@ -37,14 +37,14 @@ export default function RootLayout({
               <Link href="/tradeups" className="text-zinc-400 hover:text-white transition-colors">
                 Best Tradeups
               </Link>
-              <span className="hidden sm:inline text-zinc-600">
+              <span className="hidden sm:inline text-zinc-400">
                 CS2 Prices & Tradeups
               </span>
             </nav>
           </div>
         </header>
         <main className="flex-1 flex flex-col pt-12 pb-10">{children}</main>
-        <footer className="fixed bottom-0 left-0 right-0 z-50 border-t border-zinc-800/50 bg-zinc-950/60 backdrop-blur-md px-4 py-4 text-center text-xs text-zinc-600">
+        <footer className="fixed bottom-0 left-0 right-0 z-50 border-t border-zinc-800/50 bg-zinc-950/60 backdrop-blur-md px-4 py-4 text-center text-xs text-zinc-400">
           Prices from Steam Community Market. Not affiliated with Valve.
         </footer>
       </body>

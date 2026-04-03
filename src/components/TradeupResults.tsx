@@ -448,7 +448,7 @@ function TradeupCard({
           <div className="mt-4">
             <h4 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">
               Possible Outcomes
-              <span className="ml-2 normal-case tracking-normal text-zinc-600">
+              <span className="ml-2 normal-case tracking-normal text-zinc-400">
                 (avg normalized float: {workingCombo.avg_normalized_float.toFixed(4)})
               </span>
             </h4>
@@ -482,7 +482,7 @@ function TradeupCard({
                       <span className="text-xs text-zinc-500 w-12 text-right">
                         <ScrambleText text={`${(outcome.probability * 100).toFixed(1)}%`} scrambleSpeed={75} delay={400}/>
                       </span>
-                      <span className="text-xs text-zinc-600 w-16 text-right">
+                      <span className="text-xs text-zinc-500 w-16 text-right">
                         {outcome.expected_float.toFixed(4)}
                       </span>
                     </div>

@@ -165,7 +165,7 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
               Float range: {skin.min_float.toFixed(2)} - {skin.max_float.toFixed(2)}
             </p>
             {oldestUpdate && (
-              <p className="text-zinc-500 text-xs mt-2">
+              <p className="text-zinc-400 text-xs mt-2">
                 Prices updated: {timeAgo(oldestUpdate)}
               </p>
             )}
@@ -210,7 +210,7 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
                         {normal ? (
                           <PriceCell variant={normal} tooltipPlacement={tooltipPlacement} />
                         ) : (
-                          <span className="text-zinc-600">-</span>
+                          <span className="text-zinc-500">-</span>
                         )}
                       </td>
                       {hasStatTrak && (
@@ -218,7 +218,7 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
                           {stattrak ? (
                             <PriceCell variant={stattrak} tooltipPlacement={tooltipPlacement} />
                           ) : (
-                            <span className="text-zinc-600">-</span>
+                            <span className="text-zinc-500">-</span>
                           )}
                         </td>
                       )}
@@ -227,7 +227,7 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
                           {souvenir ? (
                             <PriceCell variant={souvenir} tooltipPlacement={tooltipPlacement} />
                           ) : (
-                            <span className="text-zinc-600">-</span>
+                            <span className="text-zinc-500">-</span>
                           )}
                         </td>
                       )}
@@ -326,7 +326,7 @@ function PriceCell({
           </span>
         )}
         {hasLastSold && hasListing && variant.sell_listings != null && (
-          <span className="text-zinc-600">
+          <span className="text-zinc-500">
             / {variant.sell_listings} listed
           </span>
         )}

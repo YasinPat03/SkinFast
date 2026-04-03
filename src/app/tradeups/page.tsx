@@ -47,7 +47,7 @@ export default async function TradeupsPage({
         <section className="flex flex-col gap-4 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-6">
           <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
             <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-[0.24em] text-zinc-500">
+              <p className="text-xs font-medium uppercase tracking-[0.24em] text-zinc-400">
                 Steam Marketplace
               </p>
               <h1 className="text-3xl font-semibold text-white">
@@ -61,7 +61,7 @@ export default async function TradeupsPage({
             </div>
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-4 py-3 text-sm text-zinc-400">
               <div>{leaderboard.total_matches.toLocaleString()} contracts match the current filter.</div>
-              <div className="text-zinc-500">Showing the top {leaderboard.entries.length} by Expected Value.</div>
+              <div className="text-zinc-400">Showing the top {leaderboard.entries.length} by Expected Value.</div>
             </div>
           </div>
 
@@ -107,7 +107,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
               }`}>
                 {entry.contract_type === 'gold' ? 'Case Tradeup' : 'Collection Tradeup'}
               </span>
-              <span className="text-sm text-zinc-500">
+              <span className="text-sm text-zinc-400">
                 {entry.collection_name}
               </span>
             </div>
@@ -121,7 +121,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                 />
               )}
               <div className="space-y-1">
-                <div className="text-xs uppercase tracking-[0.24em] text-zinc-500">
+                <div className="text-xs uppercase tracking-[0.24em] text-zinc-400">
                   Input Contract
                 </div>
                 <Link
@@ -133,7 +133,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                 <div className="text-sm text-zinc-400">
                   {entry.input.weapon_name} / {entry.input.wear_name}
                 </div>
-                <div className="text-sm text-zinc-500">
+                <div className="text-sm text-zinc-400">
                   {entry.outcome_count} possible outcomes
                 </div>
               </div>
@@ -164,7 +164,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
           <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
             <div className="mb-3 flex items-center justify-between">
               <div>
-                <div className="text-xs uppercase tracking-[0.24em] text-zinc-500">Top outcomes</div>
+                <div className="text-xs uppercase tracking-[0.24em] text-zinc-400">Top outcomes</div>
                 <div className="text-sm text-zinc-400">
                   Estimated from input wear.
                 </div>
@@ -195,7 +195,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                       <div className="truncate text-sm font-medium text-white">
                         <ScrambleText text={outcome.skin_name} scrambleSpeed={75} delay={400}/>
                       </div>
-                      <div className="text-xs text-zinc-500">
+                      <div className="text-xs text-zinc-400">
                         Est. {outcome.expected_wear} / {(outcome.probability * 100).toFixed(1)}%
                       </div>
                       <div className="mt-2 text-sm text-zinc-300">
@@ -209,7 +209,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
           </div>
 
           <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
-            <div className="text-xs uppercase tracking-[0.24em] text-zinc-500">Input pricing</div>
+            <div className="text-xs uppercase tracking-[0.24em] text-zinc-400">Input pricing</div>
             <div className="mt-3 text-sm text-zinc-400">
               <div className="flex items-center justify-between gap-3">
                 <span>Per input</span>
@@ -260,7 +260,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                     >
                       {outcome.skin_name}
                     </Link>
-                    <div className="text-xs text-zinc-500">
+                    <div className="text-xs text-zinc-400">
                       Est. {outcome.expected_wear} / avg float {outcome.expected_float.toFixed(5)} / {(outcome.probability * 100).toFixed(1)}% chance
                     </div>
                   </div>
@@ -280,7 +280,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
 function Metric({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 px-4 py-3">
-      <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">{label}</div>
+      <div className="text-xs uppercase tracking-[0.2em] text-zinc-400">{label}</div>
       <div className="mt-1 text-lg font-semibold">{children}</div>
     </div>
   );

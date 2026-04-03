@@ -15,7 +15,7 @@ export default function Home() {
             </p>
           </div>
           <SearchBar />
-          <div className="flex gap-6 text-xs text-zinc-600">
+          <div className="flex gap-6 text-xs text-zinc-400">
             <span>2000+ skins</span>
             <span>Live Steam prices</span>
             <span>Tradeup optimizer</span>
