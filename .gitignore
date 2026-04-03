@@ -10,3 +10,4 @@ node_modules
 data/
 *.db
 tsconfig.tsbuildinfo
+seo.md
