@@ -20,7 +20,7 @@ export default function FallbackPrice({
   isLastSoldPrice = false,
   normalClassName = 'text-zinc-400',
   fallbackClassName = 'text-orange-400',
-  nullClassName = 'text-zinc-500',
+  nullClassName = 'text-zinc-400',
   nullLabel = 'No price',
   suffix = '',
   tooltipText = 'No active listings. Showing the last sold price.',

@@ -308,7 +308,7 @@ function PriceCell({
             isLastSoldPrice
             normalClassName="text-white"
             fallbackClassName="text-orange-400"
-            nullClassName="text-zinc-500"
+            nullClassName="text-zinc-400"
             nullLabel="-"
             tooltipPlacement={tooltipPlacement}
           />
@@ -318,15 +318,15 @@ function PriceCell({
       )}
       <div className="text-xs mt-0.5 space-x-1">
         {hasLastSold && hasListing && (
-          <span className="text-zinc-500">Last sold: <ScrambleText text={formatPrice(variant.median_price_cents)} scrambleSpeed={75}delay={400}/></span>
+          <span className="text-zinc-400">Last sold: <ScrambleText text={formatPrice(variant.median_price_cents)} scrambleSpeed={75}delay={400}/></span>
         )}
         {!hasLastSold && hasListing && variant.sell_listings != null && (
-          <span className="text-zinc-500">
+          <span className="text-zinc-400">
             {variant.sell_listings} listed{variant.volume != null ? ` / ${variant.volume} sold` : ''}
           </span>
         )}
         {hasLastSold && hasListing && variant.sell_listings != null && (
-          <span className="text-zinc-500">
+          <span className="text-zinc-400">
             / {variant.sell_listings} listed
           </span>
         )}
@@ -354,15 +354,15 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
           {/* Eligibility info */}
           <div className="flex flex-wrap gap-4 text-sm mb-4">
             <div className="bg-zinc-800/50 rounded px-3 py-2 border border-zinc-700">
-              <span className="text-zinc-500">Input rarity: </span>
+              <span className="text-zinc-400">Input rarity: </span>
               <span className="text-white">{tradeup.input_rarity_name}</span>
             </div>
             <div className="bg-zinc-800/50 rounded px-3 py-2 border border-zinc-700">
-              <span className="text-zinc-500">Inputs required: </span>
+              <span className="text-zinc-400">Inputs required: </span>
               <span className="text-white">{tradeup.num_inputs_required}</span>
             </div>
             <div className="bg-zinc-800/50 rounded px-3 py-2 border border-zinc-700">
-              <span className="text-zinc-500">{tradeup.input_type === 'gold' ? 'Cases' : 'Collections'}: </span>
+              <span className="text-zinc-400">{tradeup.input_type === 'gold' ? 'Cases' : 'Collections'}: </span>
               <span className="text-white">{tradeup.collections?.length ?? 0}</span>
             </div>
           </div>
@@ -374,13 +374,13 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                 <details key={col.id} className="bg-zinc-800/30 rounded-lg border border-zinc-700">
                   <summary className="px-4 py-2.5 cursor-pointer text-sm text-zinc-300 hover:text-white transition-colors">
                     {col.name}
-                    <span className="text-zinc-500 ml-2">
+                    <span className="text-zinc-400 ml-2">
                       ({col.input_skins.length} inputs, {col.output_skins.length} outputs)
                     </span>
                   </summary>
                   <div className="px-4 pb-3 border-t border-zinc-700/50">
                     <div className="mt-2">
-                      <span className="text-xs uppercase tracking-wider text-zinc-500">Input skins ({tradeup.input_rarity_name})</span>
+                      <span className="text-xs uppercase tracking-wider text-zinc-400">Input skins ({tradeup.input_rarity_name})</span>
                       <div className="mt-1.5 space-y-1">
                         {col.input_skins.map((s) => (
                           <div key={s.id} className="flex items-center gap-2 text-sm">
@@ -391,7 +391,7 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                       </div>
                     </div>
                     <div className="mt-3">
-                      <span className="text-xs uppercase tracking-wider text-zinc-500">Possible outputs ({skin.rarity_name})</span>
+                      <span className="text-xs uppercase tracking-wider text-zinc-400">Possible outputs ({skin.rarity_name})</span>
                       <div className="mt-1.5 space-y-1">
                         {col.output_skins.map((s) => (
                           <div key={s.id} className="flex items-center gap-2 text-sm">

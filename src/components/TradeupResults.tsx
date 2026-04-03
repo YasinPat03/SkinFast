@@ -297,7 +297,7 @@ function TradeupCard({
         className="w-full flex items-center justify-between px-4 py-3 hover:bg-zinc-800 transition-colors text-left"
       >
         <div className="flex items-center gap-4">
-          <span className="text-zinc-500 text-sm font-mono">#{combo.rank}</span>
+          <span className="text-zinc-400 text-sm font-mono">#{combo.rank}</span>
           <div>
             <span className="text-white font-medium">
               <ScrambleText text={`${formatPrice(workingCombo.cost_per_attempt_cents)}${workingCombo.cost_per_attempt_cents != null ? ' for each hit' : ' requested target not hit'}`} scrambleSpeed={75} delay={400}/>
@@ -336,7 +336,7 @@ function TradeupCard({
             </div>
           )}
           <div className="mt-3">
-            <h4 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">
+            <h4 className="text-xs uppercase tracking-wider text-zinc-400 mb-2">
               Inputs - <ScrambleText text={formatPrice(workingCombo.total_cost_cents)} scrambleSpeed={75} delay={400}/> total
             </h4>
             <div className="space-y-1.5">
@@ -348,7 +348,7 @@ function TradeupCard({
                   <span className="text-zinc-300">
                     <ScrambleText text={`${input.quantity}x ${input.skin_name}`} scrambleSpeed={75} delay={400}/>
                   </span>
-                  <span className="text-zinc-500 text-xs">(<ScrambleText text={input.wear_name} scrambleSpeed={75} delay={400}/>)</span>
+                  <span className="text-zinc-400 text-xs">(<ScrambleText text={input.wear_name} scrambleSpeed={75} delay={400}/>)</span>
                   <span className="ml-auto text-zinc-400">
                     <ScrambleText text={`${formatPrice(input.price_cents)} ea`} scrambleSpeed={75} delay={400}/>
                   </span>
@@ -363,10 +363,10 @@ function TradeupCard({
               className="w-full flex items-center justify-between gap-3 p-3 text-left"
             >
               <div>
-                <h4 className="text-xs uppercase tracking-wider text-zinc-500">Exact Float Inputs</h4>
+                <h4 className="text-xs uppercase tracking-wider text-zinc-400">Exact Float Inputs</h4>
               </div>
               <div className="flex items-center gap-3">
-                <span className="text-xs text-zinc-500">
+                <span className="text-xs text-zinc-400">
                   {workingCombo.float_source === 'exact' ? 'exact floats' : 'wear assumptions'}
                 </span>
                 <svg
@@ -383,7 +383,7 @@ function TradeupCard({
 
             {floatEditorOpen && (
             <div className="px-3 pb-3">
-            <p className="text-xs text-zinc-500 mb-3">
+            <p className="text-xs text-zinc-400 mb-3">
               Edit the exact float for each slot and recalculate the contract with true float-level math.
             </p>
 
@@ -393,10 +393,10 @@ function TradeupCard({
                   key={`${input.slot}:${input.market_hash_name}`}
                   className="flex items-center gap-3 rounded border border-zinc-700 bg-zinc-800/50 px-3 py-2"
                 >
-                  <span className="text-xs text-zinc-500 w-6">#{input.slot}</span>
+                  <span className="text-xs text-zinc-400 w-6">#{input.slot}</span>
                   <div className="min-w-0 flex-1">
                     <div className="text-sm text-zinc-300 truncate">{input.skin_name}</div>
-                    <div className="text-xs text-zinc-500">
+                    <div className="text-xs text-zinc-400">
                       {input.wear_name} · range {input.min_float.toFixed(2)}-{input.max_float.toFixed(2)}
                     </div>
                   </div>
@@ -446,7 +446,7 @@ function TradeupCard({
           </div>
 
           <div className="mt-4">
-            <h4 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">
+            <h4 className="text-xs uppercase tracking-wider text-zinc-400 mb-2">
               Possible Outcomes
               <span className="ml-2 normal-case tracking-normal text-zinc-400">
                 (avg normalized float: {workingCombo.avg_normalized_float.toFixed(4)})
@@ -463,7 +463,7 @@ function TradeupCard({
                       <span className={outcome.is_target ? 'text-green-400 font-medium' : 'text-zinc-300'}>
                         <ScrambleText text={outcome.skin_name} scrambleSpeed={75} delay={400}/>
                       </span>
-                      <span className="text-[10px] text-zinc-500 px-1.5 py-0.5 rounded bg-zinc-700/50">
+                      <span className="text-[10px] text-zinc-300 px-1.5 py-0.5 rounded bg-zinc-700/50">
                         <ScrambleText text={outcome.expected_wear} scrambleSpeed={75} delay={400}/>
                       </span>
                       {outcome.is_target && (
@@ -479,10 +479,10 @@ function TradeupCard({
                           style={{ width: `${outcome.probability * 100}%` }}
                         />
                       </div>
-                      <span className="text-xs text-zinc-500 w-12 text-right">
+                      <span className="text-xs text-zinc-400 w-12 text-right">
                         <ScrambleText text={`${(outcome.probability * 100).toFixed(1)}%`} scrambleSpeed={75} delay={400}/>
                       </span>
-                      <span className="text-xs text-zinc-500 w-16 text-right">
+                      <span className="text-xs text-zinc-400 w-16 text-right">
                         {outcome.expected_float.toFixed(4)}
                       </span>
                     </div>
