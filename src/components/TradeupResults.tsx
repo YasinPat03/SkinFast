@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import FallbackPrice from './FallbackPrice';
+import { ScrambleText } from './unlumen-ui/scramble-text';
 
 type FloatSource = 'wear_assumption' | 'exact';
 
@@ -292,11 +292,10 @@ function TradeupCard({
           <span className="text-zinc-500 text-sm font-mono">#{combo.rank}</span>
           <div>
             <span className="text-white font-medium">
-              {formatPrice(workingCombo.cost_per_attempt_cents)}
-              {workingCombo.cost_per_attempt_cents != null ? ' for each hit' : ' requested target not hit'}
+              <ScrambleText text={`${formatPrice(workingCombo.cost_per_attempt_cents)}${workingCombo.cost_per_attempt_cents != null ? ' for each hit' : ' requested target not hit'}`} scrambleSpeed={75} delay={400}/>
             </span>
             <span className="text-zinc-400 text-sm ml-2">
-              ({(workingCombo.probability * 100).toFixed(1)}% requested wear chance)
+              (<ScrambleText text={`${(workingCombo.probability * 100).toFixed(1)}%`} scrambleSpeed={75} delay={400}/> requested wear chance)
             </span>
           </div>
         </div>
@@ -306,7 +305,7 @@ function TradeupCard({
             onMouseEnter={() => workingCombo.has_last_sold_prices && setShowEvTooltip(true)}
             onMouseLeave={() => setShowEvTooltip(false)}
           >
-            EV: {evPositive ? '+' : ''}{formatPrice(workingCombo.ev_cents)}
+            EV: <ScrambleText text={`${evPositive ? '+' : ''}${formatPrice(workingCombo.ev_cents)}`} scrambleSpeed={75} delay={400}/>
             {workingCombo.has_last_sold_prices && <span className="text-orange-400">*</span>}
             {showEvTooltip && (
               <span className="absolute top-full right-0 mt-2 w-max max-w-xs px-3 py-2 text-xs text-zinc-200 bg-zinc-900 border border-zinc-600 rounded-lg shadow-lg z-50 font-normal text-left pointer-events-none">
@@ -330,7 +329,7 @@ function TradeupCard({
           )}
           <div className="mt-3">
             <h4 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">
-              Inputs - {formatPrice(workingCombo.total_cost_cents)} total
+              Inputs - <ScrambleText text={formatPrice(workingCombo.total_cost_cents)} scrambleSpeed={75} delay={400}/> total
             </h4>
             <div className="space-y-1.5">
               {workingCombo.inputs.map((input, index) => (
@@ -339,18 +338,11 @@ function TradeupCard({
                     <img src={input.image_url} alt={input.skin_name} className="w-10 h-7 object-contain flex-shrink-0" />
                   )}
                   <span className="text-zinc-300">
-                    {input.quantity}x {input.skin_name}
+                    <ScrambleText text={`${input.quantity}x ${input.skin_name}`} scrambleSpeed={75} delay={400}/>
                   </span>
-                  <span className="text-zinc-500 text-xs">({input.wear_name})</span>
-                  <span className="ml-auto">
-                    <FallbackPrice
-                      priceCents={input.price_cents}
-                      isLastSoldPrice={input.is_last_sold_price}
-                      normalClassName="text-zinc-400"
-                      fallbackClassName="text-orange-400"
-                      tooltipText="No active listings. Showing the last sold price."
-                      suffix=" ea"
-                    />
+                  <span className="text-zinc-500 text-xs">(<ScrambleText text={input.wear_name} scrambleSpeed={75} delay={400}/>)</span>
+                  <span className="ml-auto text-zinc-400">
+                    <ScrambleText text={`${formatPrice(input.price_cents)} ea`} scrambleSpeed={75} delay={400}/>
                   </span>
                 </div>
               ))}
@@ -461,10 +453,10 @@ function TradeupCard({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className={outcome.is_target ? 'text-green-400 font-medium' : 'text-zinc-300'}>
-                        {outcome.skin_name}
+                        <ScrambleText text={outcome.skin_name} scrambleSpeed={75} delay={400}/>
                       </span>
                       <span className="text-[10px] text-zinc-500 px-1.5 py-0.5 rounded bg-zinc-700/50">
-                        {outcome.expected_wear}
+                        <ScrambleText text={outcome.expected_wear} scrambleSpeed={75} delay={400}/>
                       </span>
                       {outcome.is_target && (
                         <span className="text-[10px] uppercase bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">
@@ -480,21 +472,15 @@ function TradeupCard({
                         />
                       </div>
                       <span className="text-xs text-zinc-500 w-12 text-right">
-                        {(outcome.probability * 100).toFixed(1)}%
+                        <ScrambleText text={`${(outcome.probability * 100).toFixed(1)}%`} scrambleSpeed={75} delay={400}/>
                       </span>
                       <span className="text-xs text-zinc-600 w-16 text-right">
                         {outcome.expected_float.toFixed(4)}
                       </span>
                     </div>
                   </div>
-                  <span className="ml-auto flex-shrink-0">
-                    <FallbackPrice
-                      priceCents={outcome.price_cents}
-                      isLastSoldPrice={outcome.is_last_sold_price}
-                      normalClassName="text-zinc-400"
-                      fallbackClassName="text-orange-400"
-                      nullLabel="-"
-                    />
+                  <span className="ml-auto flex-shrink-0 text-zinc-400">
+                    <ScrambleText text={formatPrice(outcome.price_cents)} scrambleSpeed={75} delay={400}/>
                   </span>
                 </div>
               ))}
