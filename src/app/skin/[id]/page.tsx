@@ -362,7 +362,7 @@ function PriceCell({
     <div>
       {hasListing ? (
         <div className="text-white font-medium">
-          <ScrambleText text={formatPrice(variant.lowest_price_cents)} scrambleSpeed={75}delay={400} />
+          <ScrambleText text={formatPrice(variant.lowest_price_cents)} scrambleSpeed={50}delay={400} />
         </div>
       ) : hasLastSold ? (
         <div className="font-medium">
@@ -381,7 +381,7 @@ function PriceCell({
       )}
       <div className="text-xs mt-0.5 space-x-1">
         {hasLastSold && hasListing && (
-          <span className="text-zinc-400">Last sold: <ScrambleText text={formatPrice(variant.median_price_cents)} scrambleSpeed={75}delay={400}/></span>
+          <span className="text-zinc-400">Last sold: <ScrambleText text={formatPrice(variant.median_price_cents)} scrambleSpeed={50}delay={400}/></span>
         )}
         {!hasLastSold && hasListing && variant.sell_listings != null && (
           <span className="text-zinc-400">
