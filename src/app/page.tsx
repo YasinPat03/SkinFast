@@ -11,7 +11,7 @@ export default function Home() {
               <ScrambleText text="SkinFast" delay={400} scrambleSpeed={50}/>
             </h1>
             <p className="text-zinc-400 text-lg">
-              <ScrambleText text="CS2 skin prices and tradeup calculator" delay={400} scrambleSpeed={50}/>
+              <ScrambleText text="CS2 skin prices and tradeup calculator" delay={400} scrambleSpeed={20}/>
             </p>
           </div>
           <SearchBar />
