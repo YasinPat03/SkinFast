@@ -300,10 +300,10 @@ function TradeupCard({
           <span className="text-zinc-400 text-sm font-mono">#{combo.rank}</span>
           <div>
             <span className="text-white font-medium">
-              <ScrambleText text={`${formatPrice(workingCombo.cost_per_attempt_cents)}${workingCombo.cost_per_attempt_cents != null ? ' for each hit' : ' requested target not hit'}`} scrambleSpeed={50} delay={400}/>
+              <ScrambleText text={`${formatPrice(workingCombo.cost_per_attempt_cents)}${workingCombo.cost_per_attempt_cents != null ? ' for each hit' : ' requested target not hit'}`} scrambleSpeed={20} delay={400}/>
             </span>
             <span className="text-zinc-400 text-sm ml-2">
-              (<ScrambleText text={`${(workingCombo.probability * 100).toFixed(1)}%`} scrambleSpeed={50} delay={400}/> requested wear chance)
+              (<ScrambleText text={`${(workingCombo.probability * 100).toFixed(1)}%`} scrambleSpeed={20} delay={400}/> requested wear chance)
             </span>
           </div>
         </div>
@@ -313,7 +313,7 @@ function TradeupCard({
             onMouseEnter={() => workingCombo.has_last_sold_prices && setShowEvTooltip(true)}
             onMouseLeave={() => setShowEvTooltip(false)}
           >
-            EV: <ScrambleText text={`${evPositive ? '+' : ''}${formatPrice(workingCombo.ev_cents)}`} scrambleSpeed={50} delay={400}/>
+            EV: <ScrambleText text={`${evPositive ? '+' : ''}${formatPrice(workingCombo.ev_cents)}`} scrambleSpeed={20} delay={400}/>
             {workingCombo.has_last_sold_prices && <span className="text-orange-400">*</span>}
             {showEvTooltip && (
               <span className="absolute top-full right-0 mt-2 w-max max-w-xs px-3 py-2 text-xs text-zinc-200 bg-zinc-900 border border-zinc-600 rounded-lg shadow-lg z-50 font-normal text-left pointer-events-none">
@@ -337,7 +337,7 @@ function TradeupCard({
           )}
           <div className="mt-3">
             <h4 className="text-xs uppercase tracking-wider text-zinc-400 mb-2">
-              Inputs - <ScrambleText text={formatPrice(workingCombo.total_cost_cents)} scrambleSpeed={50} delay={400}/> total
+              Inputs - <ScrambleText text={formatPrice(workingCombo.total_cost_cents)} scrambleSpeed={20} delay={400}/> total
             </h4>
             <div className="space-y-1.5">
               {workingCombo.inputs.map((input, index) => (
@@ -346,11 +346,11 @@ function TradeupCard({
                     <img src={input.image_url} alt={input.skin_name} className="w-10 h-7 object-contain flex-shrink-0" />
                   )}
                   <span className="text-zinc-300">
-                    <ScrambleText text={`${input.quantity}x ${input.skin_name}`} scrambleSpeed={50} delay={400}/>
+                    <ScrambleText text={`${input.quantity}x ${input.skin_name}`} scrambleSpeed={20} delay={400}/>
                   </span>
-                  <span className="text-zinc-400 text-xs">(<ScrambleText text={input.wear_name} scrambleSpeed={50} delay={400}/>)</span>
+                  <span className="text-zinc-400 text-xs">(<ScrambleText text={input.wear_name} scrambleSpeed={20} delay={400}/>)</span>
                   <span className="ml-auto text-zinc-400">
-                    <ScrambleText text={`${formatPrice(input.price_cents)} ea`} scrambleSpeed={50} delay={400}/>
+                    <ScrambleText text={`${formatPrice(input.price_cents)} ea`} scrambleSpeed={20} delay={400}/>
                   </span>
                 </div>
               ))}
@@ -461,10 +461,10 @@ function TradeupCard({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className={outcome.is_target ? 'text-green-400 font-medium' : 'text-zinc-300'}>
-                        <ScrambleText text={outcome.skin_name} scrambleSpeed={50} delay={400}/>
+                        <ScrambleText text={outcome.skin_name} scrambleSpeed={20} delay={400}/>
                       </span>
                       <span className="text-[10px] text-zinc-300 px-1.5 py-0.5 rounded bg-zinc-700/50">
-                        <ScrambleText text={outcome.expected_wear} scrambleSpeed={50} delay={400}/>
+                        <ScrambleText text={outcome.expected_wear} scrambleSpeed={20} delay={400}/>
                       </span>
                       {outcome.is_target && (
                         <span className="text-[10px] uppercase bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">
@@ -480,7 +480,7 @@ function TradeupCard({
                         />
                       </div>
                       <span className="text-xs text-zinc-400 w-12 text-right">
-                        <ScrambleText text={`${(outcome.probability * 100).toFixed(1)}%`} scrambleSpeed={50} delay={400}/>
+                        <ScrambleText text={`${(outcome.probability * 100).toFixed(1)}%`} scrambleSpeed={20} delay={400}/>
                       </span>
                       <span className="text-xs text-zinc-400 w-16 text-right">
                         {outcome.expected_float.toFixed(4)}
@@ -488,7 +488,7 @@ function TradeupCard({
                     </div>
                   </div>
                   <span className="ml-auto flex-shrink-0 text-zinc-400">
-                    <ScrambleText text={formatPrice(outcome.price_cents)} scrambleSpeed={50} delay={400}/>
+                    <ScrambleText text={formatPrice(outcome.price_cents)} scrambleSpeed={20} delay={400}/>
                   </span>
                 </div>
               ))}
