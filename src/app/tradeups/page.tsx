@@ -7,6 +7,15 @@ import CostFilterForm from '@/components/CostFilterForm';
 export const metadata = {
   title: 'Best Tradeups | SkinFast',
   description: 'Browse the best expected-value CS2 tradeup contracts using Steam Community Market price data.',
+  openGraph: {
+    title: 'Best CS2 Tradeup Contracts | SkinFast',
+    description: 'Browse the best expected-value CS2 tradeup contracts using Steam Community Market price data.',
+  },
+  twitter: {
+    card: 'summary',
+    title: 'Best CS2 Tradeup Contracts | SkinFast',
+    description: 'Browse the best expected-value CS2 tradeup contracts using Steam Community Market price data.',
+  },
 };
 
 function formatPrice(cents: number | null): string {
@@ -116,7 +125,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
               {entry.input.image_url && (
                 <img
                   src={entry.input.image_url}
-                  alt={entry.input.skin_name}
+                  alt={`${entry.input.skin_name} CS2 skin`}
                   className="h-20 w-28 flex-shrink-0 object-contain"
                 />
               )}
@@ -187,7 +196,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                     {outcome.image_url && (
                       <img
                         src={outcome.image_url}
-                        alt={outcome.skin_name}
+                        alt={`${outcome.skin_name} CS2 skin`}
                         className="h-14 w-20 flex-shrink-0 object-contain"
                       />
                     )}
@@ -249,7 +258,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                   {outcome.image_url && (
                     <img
                       src={outcome.image_url}
-                      alt={outcome.skin_name}
+                      alt={`${outcome.skin_name} CS2 skin`}
                       className="h-12 w-16 flex-shrink-0 object-contain"
                     />
                   )}

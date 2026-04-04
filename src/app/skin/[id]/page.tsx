@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import sql from '@/lib/db';
 import { getTradeupEligibility } from '@/lib/tradeup';
 import { isPriceStale } from '@/lib/prices';
@@ -68,6 +69,36 @@ function timeAgo(dateStr: string | null): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  const { id } = await params;
+  const skinRows = await sql<{ name: string; weapon_name: string; pattern_name: string; rarity_name: string; image_url: string | null }[]>`
+    SELECT name, weapon_name, pattern_name, rarity_name, image_url FROM skins WHERE id = ${id}
+  `;
+  const skin = skinRows[0];
+  if (!skin) {
+    return { title: 'Skin Not Found | SkinFast' };
+  }
+
+  const title = `${skin.name} Prices — SkinFast`;
+  const description = `Live Steam Community Market prices for ${skin.name} (${skin.rarity_name}). Compare all wears, StatTrak & Souvenir variants, float ranges, and tradeup contract info.`;
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      images: skin.image_url ? [{ url: skin.image_url, alt: skin.name }] : [],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
+      images: skin.image_url ? [skin.image_url] : [],
+    },
+  };
 }
 
 export default async function SkinDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -142,8 +173,40 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
       .map((v) => v.wear_name)
   )];
 
+  const lowestPriceVariant = variants
+    .filter(v => v.lowest_price_cents != null)
+    .sort((a, b) => a.lowest_price_cents! - b.lowest_price_cents!)[0];
+
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Product',
+    name: skin.name,
+    description: `${skin.name} — ${skin.rarity_name} CS2 skin. Float range ${skin.min_float.toFixed(2)}–${skin.max_float.toFixed(2)}.`,
+    image: skin.image_url ?? undefined,
+    brand: {
+      '@type': 'Brand',
+      name: skin.weapon_name,
+    },
+    ...(lowestPriceVariant && {
+      offers: {
+        '@type': 'Offer',
+        price: (lowestPriceVariant.lowest_price_cents! / 100).toFixed(2),
+        priceCurrency: 'USD',
+        availability: 'https://schema.org/InStock',
+        seller: {
+          '@type': 'Organization',
+          name: 'Steam Community Market',
+        },
+      },
+    }),
+  };
+
   return (
     <div className="flex flex-col flex-1 items-center px-4 py-8 gap-8">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
       <SearchBar />
 
       <div className="w-full max-w-4xl rounded-xl border border-zinc-700/50 bg-zinc-900/60 backdrop-blur-sm p-6 sm:p-8">

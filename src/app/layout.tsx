@@ -5,8 +5,31 @@ import LiquidChrome from "@/components/liquid-chrome";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'https://skinfast.app'),
   title: "SkinFast — CS2 Skin Prices & Tradeup Calculator",
   description: "Search CS2 skin prices and find the best tradeup contracts",
+  alternates: {
+    canonical: './',
+  },
+  openGraph: {
+    siteName: 'SkinFast',
+    type: 'website',
+    locale: 'en_US',
+    title: 'SkinFast — CS2 Skin Prices & Tradeup Calculator',
+    description: 'Search CS2 skin prices and find the best tradeup contracts',
+  },
+  twitter: {
+    card: 'summary',
+    title: 'SkinFast — CS2 Skin Prices & Tradeup Calculator',
+    description: 'Search CS2 skin prices and find the best tradeup contracts',
+  },
+  icons: {
+    icon: [
+      { url: '/favicon-32x32.png', sizes: '32x32', type: 'image/png' },
+      { url: '/favicon-16x16.png', sizes: '16x16', type: 'image/png' },
+    ],
+    apple: '/apple-touch-icon.png',
+  },
 };
 
 export default function RootLayout({
