@@ -894,6 +894,57 @@ async function gatherInputCandidates(
   return { targetCandidates, fillerCandidates, targetCollectionIds };
 }
 
+// ── Batch Variant+Price Loading ──────────────────────────────────
+
+interface VariantPriceRow {
+  skin_id: string;
+  wear_name: string;
+  market_hash_name: string;
+  lowest_price_cents: number | null;
+  median_price_cents: number | null;
+}
+
+async function batchLoadVariantPrices(
+  skinIds: string[],
+  stattrakFilter: boolean
+): Promise<Map<string, VariantPriceRow[]>> {
+  if (skinIds.length === 0) return new Map();
+
+  const rows = await sql<VariantPriceRow[]>`
+    SELECT sv.skin_id, sv.wear_name, sv.market_hash_name, p.lowest_price_cents, p.median_price_cents
+    FROM skin_variants sv
+    JOIN prices p ON sv.market_hash_name = p.market_hash_name
+    WHERE sv.skin_id IN ${sql(skinIds)} AND sv.is_stattrak = ${stattrakFilter} AND sv.is_souvenir = FALSE
+  `;
+
+  const grouped = new Map<string, VariantPriceRow[]>();
+  for (const row of rows) {
+    const existing = grouped.get(row.skin_id);
+    if (existing) {
+      existing.push(row);
+    } else {
+      grouped.set(row.skin_id, [row]);
+    }
+  }
+  return grouped;
+}
+
+function buildWearPriceMaps(
+  rows: VariantPriceRow[]
+): { prices_by_wear: Record<string, number>; last_sold_by_wear: Record<string, number> } {
+  const prices: Record<string, number> = {};
+  const lastSold: Record<string, number> = {};
+  for (const row of rows) {
+    if (row.lowest_price_cents != null && row.lowest_price_cents > 0) {
+      prices[row.wear_name] = row.lowest_price_cents;
+    }
+    if (row.median_price_cents != null && row.median_price_cents > 0) {
+      lastSold[row.wear_name] = row.median_price_cents;
+    }
+  }
+  return { prices_by_wear: prices, last_sold_by_wear: lastSold };
+}
+
 async function buildCandidatesWithWears(
   rawInputs: RawInput[],
   stattrakFilter: boolean,
@@ -902,22 +953,20 @@ async function buildCandidatesWithWears(
   const candidates: InputCandidate[] = [];
   const seen = new Set<string>();
 
+  // Batch-load all variant prices for every candidate skin in one query
+  const uniqueSkinIds = [...new Set(rawInputs.map((r) => r.skin_id))];
+  const variantMap = await batchLoadVariantPrices(uniqueSkinIds, stattrakFilter);
+
   for (const row of rawInputs) {
     const key = `${row.skin_id}:${row.collection_id}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
-    // Get all wears with prices for this skin (fall back to last-sold if no active listing)
-    const wears = await sql<{ wear_name: string; market_hash_name: string; lowest_price_cents: number | null; median_price_cents: number | null }[]>`
-      SELECT sv.wear_name, sv.market_hash_name, p.lowest_price_cents, p.median_price_cents
-      FROM skin_variants sv
-      JOIN prices p ON sv.market_hash_name = p.market_hash_name
-      WHERE sv.skin_id = ${row.skin_id} AND sv.is_stattrak = ${stattrakFilter} AND sv.is_souvenir = FALSE
-      AND (
-        (p.lowest_price_cents IS NOT NULL AND p.lowest_price_cents > 0)
-        OR (p.median_price_cents IS NOT NULL AND p.median_price_cents > 0)
-      )
-    `;
+    // Filter to rows with valid prices (matching original SQL WHERE clause)
+    const wears = (variantMap.get(row.skin_id) ?? []).filter(
+      (w) => (w.lowest_price_cents != null && w.lowest_price_cents > 0)
+        || (w.median_price_cents != null && w.median_price_cents > 0)
+    );
 
     if (wears.length === 0) continue;
 
@@ -979,9 +1028,12 @@ async function gatherOutputSkins(
     AND cs.collection_id NOT IN ${sql(TRADEUP_EXCLUDED_COLLECTION_IDS)}
   `;
 
+  const skinIds = rows.map((r) => r.skin_id);
+  const variantMap = await batchLoadVariantPrices(skinIds, stattrakFilter);
+
   const results: OutputSkin[] = [];
   for (const row of rows) {
-    const { prices_by_wear, last_sold_by_wear } = await getWearPrices(row.skin_id, stattrakFilter);
+    const { prices_by_wear, last_sold_by_wear } = buildWearPriceMaps(variantMap.get(row.skin_id) ?? []);
     results.push({
       ...row,
       prices_by_wear,
@@ -1012,9 +1064,13 @@ async function gatherOutputSkinsFromCrates(
     ? rows.filter((row) => isKnifeSkin(row.weapon_name))
     : rows;
 
+  const skinIds = filteredRows.map((r) => r.skin_id);
+  const variantMap = await batchLoadVariantPrices(skinIds, stattrakFilter);
+
   const results: OutputSkin[] = [];
   for (const row of filteredRows) {
-    const { prices_by_wear, last_sold_by_wear } = await getWearPrices(row.skin_id, stattrakFilter);
+    const { prices_by_wear, last_sold_by_wear } = buildWearPriceMaps(variantMap.get(row.skin_id) ?? []);
+    // Preserve StatTrak filtering: skip skins with no prices at all
     if (stattrakFilter && Object.keys(prices_by_wear).length === 0 && Object.keys(last_sold_by_wear).length === 0) {
       continue;
     }
@@ -1027,26 +1083,3 @@ async function gatherOutputSkinsFromCrates(
   return results;
 }
 
-async function getWearPrices(
-  skinId: string,
-  stattrakFilter: boolean
-): Promise<{ prices_by_wear: Record<string, number>; last_sold_by_wear: Record<string, number> }> {
-  const rows = await sql<{ wear_name: string; lowest_price_cents: number | null; median_price_cents: number | null }[]>`
-    SELECT sv.wear_name, p.lowest_price_cents, p.median_price_cents
-    FROM skin_variants sv
-    JOIN prices p ON sv.market_hash_name = p.market_hash_name
-    WHERE sv.skin_id = ${skinId} AND sv.is_stattrak = ${stattrakFilter} AND sv.is_souvenir = FALSE
-  `;
-
-  const prices: Record<string, number> = {};
-  const lastSold: Record<string, number> = {};
-  for (const row of rows) {
-    if (row.lowest_price_cents != null && row.lowest_price_cents > 0) {
-      prices[row.wear_name] = row.lowest_price_cents;
-    }
-    if (row.median_price_cents != null && row.median_price_cents > 0) {
-      lastSold[row.wear_name] = row.median_price_cents;
-    }
-  }
-  return { prices_by_wear: prices, last_sold_by_wear: lastSold };
-}
