@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { GeistPixelSquare } from "geist/font/pixel";
 import Link from "next/link";
+import { Analytics } from "@vercel/analytics/next";
 import LiquidChrome from "@/components/liquid-chrome";
 import "./globals.css";
 
@@ -67,6 +68,7 @@ export default function RootLayout({
           </div>
         </header>
         <main className="flex-1 flex flex-col pt-12 pb-10">{children}</main>
+        <Analytics />
         <footer className="fixed bottom-0 left-0 right-0 z-50 border-t border-zinc-800/50 bg-zinc-950/60 backdrop-blur-md px-4 py-4 text-center text-xs text-zinc-400">
           Prices from Steam Community Market. Not affiliated with Valve.
         </footer>
