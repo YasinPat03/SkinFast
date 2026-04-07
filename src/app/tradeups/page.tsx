@@ -1,7 +1,6 @@
 import Link from 'next/link';
 import SearchBar from '@/components/SearchBar';
 import { getTradeupLeaderboard, type TradeupLeaderboardEntry } from '@/lib/tradeup-leaderboard';
-import { ScrambleText } from "@/components/unlumen-ui/scramble-text";
 import CostFilterForm from '@/components/CostFilterForm';
 
 export const metadata = {
@@ -60,7 +59,7 @@ export default async function TradeupsPage({
                 Steam Marketplace
               </p>
               <h1 className="text-3xl font-semibold text-white">
-                <ScrambleText text="Best Tradeup Contracts"/>
+                Best Tradeup Contracts
               </h1>
               <p className="max-w-3xl text-sm leading-6 text-zinc-400">
                 Ranked by expected value using cached Steam Community Market prices. This leaderboard evaluates
@@ -137,7 +136,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                   href={`/skin/${entry.input.skin_id}`}
                   className="block text-xl font-semibold text-white transition-colors hover:text-blue-300"
                 >
-                  <ScrambleText text={`${entry.num_inputs}x ${entry.input.skin_name}`}/>
+                  {entry.num_inputs}x {entry.input.skin_name}
                 </Link>
                 <div className="text-sm text-zinc-400">
                   {entry.input.weapon_name} / {entry.input.wear_name}
@@ -151,19 +150,19 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
 
           <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[360px]">
             <Metric label="Total cost">
-              <span className="text-white"><ScrambleText text={formatPrice(entry.total_cost_cents)} scrambleSpeed={20}delay={400}/></span>
+              <span className="text-white">{formatPrice(entry.total_cost_cents)}</span>
             </Metric>
             <Metric label="Estimated return">
-              <span className="text-white"><ScrambleText text={formatPrice(entry.expected_return_cents)} scrambleSpeed={20}delay={400}/></span>
+              <span className="text-white">{formatPrice(entry.expected_return_cents)}</span>
             </Metric>
             <Metric label="Estimated value">
               <span className={evPositive ? 'text-green-400' : 'text-red-400'}>
-                {evPositive ? '+' : ''}{<ScrambleText text={formatPrice(entry.ev_cents)} scrambleSpeed={20}delay={400}/>}
+                {evPositive ? '+' : ''}{formatPrice(entry.ev_cents)}
               </span>
             </Metric>
             <Metric label="Estimated ROI">
               <span className={evPositive ? 'text-green-400' : 'text-red-400'}>
-                {entry.roi_percent > 0 ? '+' : ''}{<ScrambleText text={entry.roi_percent.toFixed(2)} scrambleSpeed={20}delay={400}/>}%
+                {entry.roi_percent > 0 ? '+' : ''}{entry.roi_percent.toFixed(2)}%
               </span>
             </Metric>
           </div>
@@ -202,13 +201,13 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                     )}
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium text-white">
-                        <ScrambleText text={outcome.skin_name} scrambleSpeed={20} delay={400}/>
+                        {outcome.skin_name}
                       </div>
                       <div className="text-xs text-zinc-400">
                         Est. {outcome.expected_wear} / {(outcome.probability * 100).toFixed(1)}%
                       </div>
                       <div className="mt-2 text-sm text-zinc-300">
-                        <ScrambleText text={formatPrice(outcome.price_cents)} scrambleSpeed={20} delay={400}/>
+                        {formatPrice(outcome.price_cents)}
                       </div>
                     </div>
                   </div>
@@ -222,23 +221,23 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
             <div className="mt-3 text-sm text-zinc-400">
               <div className="flex items-center justify-between gap-3">
                 <span>Per input</span>
-                <span className="text-zinc-300"><ScrambleText text={formatPrice(entry.input.price_cents)} scrambleSpeed={20} delay={400}/></span>
+                <span className="text-zinc-300">{formatPrice(entry.input.price_cents)}</span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3">
                 <span>Wear</span>
-                <span className="text-zinc-300"><ScrambleText text={entry.input.wear_name} scrambleSpeed={20} delay={400}/></span>
+                <span className="text-zinc-300">{entry.input.wear_name}</span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3">
                 <span>Estimated avg float</span>
-                <span className="text-zinc-300"><ScrambleText text={entry.input.expected_float.toFixed(5)} scrambleSpeed={20} delay={400}/></span>
+                <span className="text-zinc-300">{entry.input.expected_float.toFixed(5)}</span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3">
                 <span>Contract size</span>
-                <span className="text-zinc-300"><ScrambleText text={`${entry.num_inputs} inputs`} scrambleSpeed={20} delay={400}/></span>
+                <span className="text-zinc-300">{entry.num_inputs} inputs</span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3">
                 <span>Best priced outcome</span>
-                <span className="text-zinc-300"><ScrambleText text={formatPrice(entry.best_outcome_price_cents)} scrambleSpeed={20} delay={400}/></span>
+                <span className="text-zinc-300">{formatPrice(entry.best_outcome_price_cents)}</span>
               </div>
             </div>
           </div>
@@ -274,7 +273,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                     </div>
                   </div>
                   <span className="text-zinc-300">
-                    <ScrambleText text={formatPrice(outcome.price_cents)} scrambleSpeed={20} delay={400}/>
+                    {formatPrice(outcome.price_cents)}
                   </span>
                 </div>
               ))}

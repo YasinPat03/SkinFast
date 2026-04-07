@@ -3,6 +3,7 @@ import { GeistPixelSquare } from "geist/font/pixel";
 import Link from "next/link";
 import { Analytics } from "@vercel/analytics/next";
 import LiquidChrome from "@/components/liquid-chrome";
+import { Button } from "@/components/ui/button";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -58,12 +59,14 @@ export default function RootLayout({
               SkinFast
             </Link>
             <nav className="flex items-center gap-4 text-sm">
-              <Link href="/tradeups" className="text-zinc-400 hover:text-white transition-colors">
-                Best Tradeups
-              </Link>
-              <span className="hidden sm:inline text-zinc-400">
-                CS2 Prices & Tradeups
-              </span>
+              <Button
+                asChild
+                size="sm"
+                variant="outline"
+                className="border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800/70 hover:text-white"
+              >
+                <Link href="/tradeups">Best Tradeups</Link>
+              </Button>
             </nav>
           </div>
         </header>
