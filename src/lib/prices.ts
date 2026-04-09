@@ -33,20 +33,51 @@ interface PriceOverviewResponse {
 
 type PriceHistoryEntry = [string, number, string];
 
-function parseLatestSaleFromHistoryHtml(html: string): number | null {
+function parseHistoryFromHtml(html: string): PriceHistoryEntry[] | null {
   const match = html.match(/var line1=(\[[\s\S]*?\]);/);
   if (!match) return null;
-
   try {
-    const history = JSON.parse(match[1]) as PriceHistoryEntry[];
-    const latest = history[history.length - 1];
-    if (!latest || typeof latest[1] !== 'number' || !Number.isFinite(latest[1])) {
-      return null;
-    }
-    return Math.round(latest[1] * 100);
+    return JSON.parse(match[1]) as PriceHistoryEntry[];
   } catch {
     return null;
   }
+}
+
+function parseLatestSaleFromHistoryHtml(html: string): number | null {
+  const history = parseHistoryFromHtml(html);
+  if (!history) return null;
+  const latest = history[history.length - 1];
+  if (!latest || typeof latest[1] !== 'number' || !Number.isFinite(latest[1])) {
+    return null;
+  }
+  return Math.round(latest[1] * 100);
+}
+
+// Walks the history backward, accumulating sales weighted by their bucket volume,
+// until we have at least 5 sales (or run out). Returns the weighted average in cents.
+function computeLastFiveAvg(
+  history: PriceHistoryEntry[]
+): { avg_cents: number; sample_count: number; last_sale_at: string | null } | null {
+  let totalSales = 0;
+  let weightedSum = 0;
+  let lastSaleAt: string | null = null;
+
+  for (let i = history.length - 1; i >= 0 && totalSales < 5; i--) {
+    const [date, price, volStr] = history[i];
+    const vol = typeof volStr === 'string' ? parseInt(volStr, 10) : Number(volStr);
+    if (!Number.isFinite(price) || !Number.isFinite(vol) || vol <= 0) continue;
+    if (lastSaleAt === null) lastSaleAt = date;
+    const take = Math.min(vol, 5 - totalSales);
+    weightedSum += price * take;
+    totalSales += take;
+  }
+
+  if (totalSales === 0) return null;
+  return {
+    avg_cents: Math.round((weightedSum / totalSales) * 100),
+    sample_count: totalSales,
+    last_sale_at: lastSaleAt,
+  };
 }
 
 async function fetchLatestSaleFromListingPage(marketHashName: string): Promise<number | null> {
@@ -135,6 +166,97 @@ export async function refreshSinglePrice(marketHashName: string): Promise<{
   `;
 
   return { lowest_price_cents: lowest, median_price_cents: median, volume };
+}
+
+// Fetches the market listing page, parses the embedded sales history (`line1`),
+// and upserts the volume-weighted average of the last 5 individual sales into `last_sold_avg`.
+export async function refreshLastSoldAvg(marketHashName: string): Promise<{
+  avg_last5_cents: number;
+  sample_count: number;
+  last_sale_at: string | null;
+} | null> {
+  await throttle();
+
+  const encodedName = encodeURIComponent(marketHashName);
+  const res = await fetch(`${MARKET_LISTING_URL}${encodedName}`, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  });
+
+  if (res.status === 429) {
+    console.warn(`Rate limited fetching listing page for ${marketHashName}`);
+    return null;
+  }
+
+  // Write a sentinel row even on no-data so the cron doesn't retry this variant
+  // every minute. The `updated_at` filter on the query will skip it until it goes stale.
+  let avg: number | null = null;
+  let sampleCount: number | null = null;
+  let lastSaleAt: string | null = null;
+
+  if (res.ok) {
+    const html = await res.text();
+    const history = parseHistoryFromHtml(html);
+    const result = history ? computeLastFiveAvg(history) : null;
+    if (result) {
+      avg = result.avg_cents;
+      sampleCount = result.sample_count;
+      lastSaleAt = result.last_sale_at;
+    }
+  } else {
+    console.warn(`HTTP ${res.status} fetching listing page for ${marketHashName}`);
+  }
+
+  await sql`
+    INSERT INTO last_sold_avg (market_hash_name, avg_last5_cents, sample_count, last_sale_at, updated_at)
+    VALUES (${marketHashName}, ${avg}, ${sampleCount}, ${lastSaleAt}, NOW())
+    ON CONFLICT (market_hash_name) DO UPDATE SET
+      avg_last5_cents = EXCLUDED.avg_last5_cents,
+      sample_count = EXCLUDED.sample_count,
+      last_sale_at = EXCLUDED.last_sale_at,
+      updated_at = NOW()
+  `;
+
+  if (avg === null) return null;
+  return { avg_last5_cents: avg, sample_count: sampleCount!, last_sale_at: lastSaleAt };
+}
+
+// Process one chunk of variants needing a last-sold-avg refresh. Shared by the
+// CLI script and the Vercel cron route so both follow the same incremental pattern.
+export async function runLastSoldAvgChunk(opts: {
+  batchSize: number;
+  staleHours: number;
+}): Promise<{ attempted: number; withData: number; noData: number }> {
+  const { batchSize, staleHours } = opts;
+
+  const targets = await sql<{ market_hash_name: string }[]>`
+    SELECT sv.market_hash_name
+    FROM skin_variants sv
+    LEFT JOIN last_sold_avg l ON sv.market_hash_name = l.market_hash_name
+    WHERE l.market_hash_name IS NULL
+       OR l.updated_at < NOW() - (${staleHours} || ' hours')::INTERVAL
+    ORDER BY l.updated_at NULLS FIRST, sv.market_hash_name
+    LIMIT ${batchSize}
+  `;
+
+  let withData = 0;
+  let noData = 0;
+
+  for (const { market_hash_name } of targets) {
+    try {
+      const result = await refreshLastSoldAvg(market_hash_name);
+      if (result) withData++;
+      else noData++;
+    } catch (err) {
+      noData++;
+      console.warn(`error on ${market_hash_name}: ${err}`);
+    }
+  }
+
+  return { attempted: targets.length, withData, noData };
 }
 
 // Treat variants with no listing and no last-sold price as stale so they can be retried immediately.

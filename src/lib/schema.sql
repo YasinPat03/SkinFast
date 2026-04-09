@@ -65,6 +65,15 @@ CREATE TABLE IF NOT EXISTS prices (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Average of the last 5 sold prices per variant, parsed from the market listing page's line1 history.
+CREATE TABLE IF NOT EXISTS last_sold_avg (
+  market_hash_name TEXT PRIMARY KEY REFERENCES skin_variants(market_hash_name),
+  avg_last5_cents INTEGER,
+  sample_count INTEGER,
+  last_sale_at TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Scraper state for resume capability
 CREATE TABLE IF NOT EXISTS scrape_state (
   key TEXT PRIMARY KEY,
