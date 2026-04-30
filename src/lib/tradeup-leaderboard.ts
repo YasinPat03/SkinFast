@@ -32,7 +32,7 @@ interface VariantPriceRow {
   wear_name: string;
   market_hash_name: string;
   lowest_price_cents: number | null;
-  median_price_cents: number | null;
+  last_sold_avg_cents: number | null;
 }
 
 interface PriceOption {
@@ -45,9 +45,8 @@ interface PriceOption {
 }
 
 interface PriceLookup {
-  listings_by_wear: Record<string, number>;
+  // wear_name -> last_sold_avg.avg_last5_cents (volume-weighted last 5 sales)
   last_sold_by_wear: Record<string, number>;
-  cheapest_listing_cents: number | null;
   cheapest_last_sold_cents: number | null;
 }
 
@@ -155,14 +154,15 @@ const getCachedTradeupContracts = unstable_cache(
           sv.wear_name,
           sv.market_hash_name,
           p.lowest_price_cents,
-          p.median_price_cents
+          l.avg_last5_cents AS last_sold_avg_cents
         FROM skin_variants sv
-        JOIN prices p ON p.market_hash_name = sv.market_hash_name
+        LEFT JOIN prices p ON p.market_hash_name = sv.market_hash_name
+        LEFT JOIN last_sold_avg l ON l.market_hash_name = sv.market_hash_name
         WHERE sv.is_stattrak = FALSE
           AND sv.is_souvenir = FALSE
           AND (
             (p.lowest_price_cents IS NOT NULL AND p.lowest_price_cents > 0)
-            OR (p.median_price_cents IS NOT NULL AND p.median_price_cents > 0)
+            OR (l.avg_last5_cents IS NOT NULL AND l.avg_last5_cents > 0)
           )
       `,
     ]);
@@ -178,7 +178,7 @@ const getCachedTradeupContracts = unstable_cache(
       return a.total_cost_cents - b.total_cost_cents;
     });
   },
-  ['tradeup-leaderboard-contracts-v3'],
+  ['tradeup-leaderboard-contracts-v4'],
   { revalidate: 900 }
 );
 
@@ -213,51 +213,43 @@ function buildPriceMaps(
     if (!meta) continue;
 
     const hasListing = row.lowest_price_cents != null && row.lowest_price_cents > 0;
-    const fallbackPrice = row.median_price_cents != null && row.median_price_cents > 0 ? row.median_price_cents : null;
-    const priceToUse = hasListing ? row.lowest_price_cents : fallbackPrice;
+    const lastSoldAvg = row.last_sold_avg_cents != null && row.last_sold_avg_cents > 0 ? row.last_sold_avg_cents : null;
 
-    if (priceToUse == null) continue;
-
-    const assumedFloat = estimateFloat(row.wear_name, meta.min_float, meta.max_float);
-    const wearOption: PriceOption = {
-      wear_name: row.wear_name,
-      market_hash_name: row.market_hash_name,
-      price_cents: priceToUse,
-      is_last_sold_price: !hasListing,
-      assumed_float: assumedFloat,
-      t_float: calculateTFloat(assumedFloat, meta.min_float, meta.max_float),
-    };
-
-    const options = wearOptionsBySkinId.get(row.skin_id);
-    if (options) {
-      options.push(wearOption);
-    } else {
-      wearOptionsBySkinId.set(row.skin_id, [wearOption]);
-    }
-
-    let lookup = priceLookupBySkinId.get(row.skin_id);
-    if (!lookup) {
-      lookup = {
-        listings_by_wear: {},
-        last_sold_by_wear: {},
-        cheapest_listing_cents: null,
-        cheapest_last_sold_cents: null,
+    // Inputs are buyable variants — only build a wear option when there's an active listing.
+    if (hasListing) {
+      const assumedFloat = estimateFloat(row.wear_name, meta.min_float, meta.max_float);
+      const wearOption: PriceOption = {
+        wear_name: row.wear_name,
+        market_hash_name: row.market_hash_name,
+        price_cents: row.lowest_price_cents!,
+        is_last_sold_price: false,
+        assumed_float: assumedFloat,
+        t_float: calculateTFloat(assumedFloat, meta.min_float, meta.max_float),
       };
-      priceLookupBySkinId.set(row.skin_id, lookup);
+
+      const options = wearOptionsBySkinId.get(row.skin_id);
+      if (options) {
+        options.push(wearOption);
+      } else {
+        wearOptionsBySkinId.set(row.skin_id, [wearOption]);
+      }
     }
 
-    if (hasListing && row.lowest_price_cents != null) {
-      lookup.listings_by_wear[row.wear_name] = row.lowest_price_cents;
-      lookup.cheapest_listing_cents = lookup.cheapest_listing_cents == null
-        ? row.lowest_price_cents
-        : Math.min(lookup.cheapest_listing_cents, row.lowest_price_cents);
-    }
+    // Outputs are valued at the last-5 sold avg (what the user would realistically realize selling).
+    if (lastSoldAvg != null) {
+      let lookup = priceLookupBySkinId.get(row.skin_id);
+      if (!lookup) {
+        lookup = {
+          last_sold_by_wear: {},
+          cheapest_last_sold_cents: null,
+        };
+        priceLookupBySkinId.set(row.skin_id, lookup);
+      }
 
-    if (fallbackPrice != null) {
-      lookup.last_sold_by_wear[row.wear_name] = fallbackPrice;
+      lookup.last_sold_by_wear[row.wear_name] = lastSoldAvg;
       lookup.cheapest_last_sold_cents = lookup.cheapest_last_sold_cents == null
-        ? fallbackPrice
-        : Math.min(lookup.cheapest_last_sold_cents, fallbackPrice);
+        ? lastSoldAvg
+        : Math.min(lookup.cheapest_last_sold_cents, lastSoldAvg);
     }
   }
 
@@ -276,18 +268,10 @@ function resolveOutputPrice(
     return { price_cents: null, is_last_sold_price: false };
   }
 
-  const listingPrice = lookup.listings_by_wear[wearName];
-  if (listingPrice != null) {
-    return { price_cents: listingPrice, is_last_sold_price: false };
-  }
-
+  // Outputs are valued strictly at the last-5 sold avg.
   const lastSoldPrice = lookup.last_sold_by_wear[wearName];
   if (lastSoldPrice != null) {
     return { price_cents: lastSoldPrice, is_last_sold_price: true };
-  }
-
-  if (lookup.cheapest_listing_cents != null) {
-    return { price_cents: lookup.cheapest_listing_cents, is_last_sold_price: false };
   }
 
   if (lookup.cheapest_last_sold_cents != null) {

@@ -43,6 +43,8 @@ interface VariantRow {
   is_souvenir: boolean;
   lowest_price_cents: number | null;
   median_price_cents: number | null;
+  last_sold_avg_cents: number | null;
+  last_sold_sample_count: number | null;
   volume: number | null;
   sell_listings: number | null;
   updated_at: string | null;
@@ -111,9 +113,11 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
   const variants = await sql<VariantRow[]>`
     SELECT
       sv.market_hash_name, sv.wear_name, sv.is_stattrak, sv.is_souvenir,
-      p.lowest_price_cents, p.median_price_cents, p.volume, p.sell_listings, p.updated_at
+      p.lowest_price_cents, p.median_price_cents, p.volume, p.sell_listings, p.updated_at,
+      l.avg_last5_cents AS last_sold_avg_cents, l.sample_count AS last_sold_sample_count
     FROM skin_variants sv
     LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
+    LEFT JOIN last_sold_avg l ON sv.market_hash_name = l.market_hash_name
     WHERE sv.skin_id = ${id}
   `;
 
@@ -356,7 +360,8 @@ function PriceCell({
   tooltipPlacement?: 'top' | 'bottom';
 }) {
   const hasListing = variant.lowest_price_cents != null;
-  const hasLastSold = variant.median_price_cents != null;
+  const lastSoldCents = variant.last_sold_avg_cents ?? variant.median_price_cents;
+  const hasLastSold = lastSoldCents != null;
 
   return (
     <div>
@@ -367,7 +372,7 @@ function PriceCell({
       ) : hasLastSold ? (
         <div className="font-medium">
           <FallbackPrice
-            priceCents={variant.median_price_cents}
+            priceCents={lastSoldCents}
             isLastSoldPrice
             normalClassName="text-white"
             fallbackClassName="text-orange-400"
@@ -381,7 +386,7 @@ function PriceCell({
       )}
       <div className="text-xs mt-0.5 space-x-1">
         {hasLastSold && hasListing && (
-          <span className="text-zinc-400">Last sold: <ScrambleText text={formatPrice(variant.median_price_cents)} scrambleSpeed={20}delay={400}/></span>
+          <span className="text-zinc-400">Last sold: <ScrambleText text={formatPrice(lastSoldCents)} scrambleSpeed={20}delay={400}/></span>
         )}
         {!hasLastSold && hasListing && variant.sell_listings != null && (
           <span className="text-zinc-400">

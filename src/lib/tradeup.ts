@@ -157,20 +157,21 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
   const allSkinIds = [...new Set([...inputSkins.map((s) => s.id), ...outputSkins.map((s) => s.id)])];
   const cheapestPrices = await getCheapestPrices(allSkinIds);
 
-  // Group by collection
+  // Group by collection. Inputs are priced at the current listing (must be buyable);
+  // outputs are priced at the last-5 sold avg (what the user would realize selling).
   const collectionData = collections.map((col) => {
     const colInputs = inputSkins
       .filter((s) => s.collection_id === col.id)
       .map((s) => {
         const priceInfo = cheapestPrices.get(s.id);
-        return { ...s, cheapest_price_cents: priceInfo?.price ?? null, is_last_sold_price: priceInfo?.isLastSold ?? false };
+        return { ...s, cheapest_price_cents: priceInfo?.listing ?? null, is_last_sold_price: false };
       });
 
     const colOutputs = outputSkins
       .filter((s) => s.collection_id === col.id)
       .map((s) => {
         const priceInfo = cheapestPrices.get(s.id);
-        return { ...s, cheapest_price_cents: priceInfo?.price ?? null, is_last_sold_price: priceInfo?.isLastSold ?? false };
+        return { ...s, cheapest_price_cents: priceInfo?.lastSold ?? null, is_last_sold_price: priceInfo?.lastSold != null };
       });
 
     return {
@@ -235,20 +236,20 @@ async function getGoldTradeupEligibility(skinId: string): Promise<TradeupEligibi
   const allSkinIds = [...new Set([...inputSkins.map((s) => s.id), ...outputSkins.map((s) => s.id)])];
   const cheapestPrices = await getCheapestPrices(allSkinIds);
 
-  // Group by crate
+  // Group by crate. Same split as standard: inputs from listings, outputs from last-5 avg.
   const collectionData = crates.map((crate) => {
     const crateInputs = inputSkins
       .filter((s) => s.collection_id === crate.id)
       .map((s) => {
         const priceInfo = cheapestPrices.get(s.id);
-        return { ...s, cheapest_price_cents: priceInfo?.price ?? null, is_last_sold_price: priceInfo?.isLastSold ?? false };
+        return { ...s, cheapest_price_cents: priceInfo?.listing ?? null, is_last_sold_price: false };
       });
 
     const crateOutputs = outputSkins
       .filter((s) => s.collection_id === crate.id)
       .map((s) => {
         const priceInfo = cheapestPrices.get(s.id);
-        return { ...s, cheapest_price_cents: priceInfo?.price ?? null, is_last_sold_price: priceInfo?.isLastSold ?? false };
+        return { ...s, cheapest_price_cents: priceInfo?.lastSold ?? null, is_last_sold_price: priceInfo?.lastSold != null };
       });
 
     return {
@@ -274,29 +275,30 @@ async function getGoldTradeupEligibility(skinId: string): Promise<TradeupEligibi
   };
 }
 
-// Get cheapest non-StatTrak, non-Souvenir price for each skin, falling back to median (last sold) if no listing
-async function getCheapestPrices(skinIds: string[]): Promise<Map<string, { price: number; isLastSold: boolean }>> {
+// For each non-StatTrak, non-Souvenir skin, return both the cheapest current listing
+// (for input pricing) and the cheapest last-5-sold avg (for output pricing).
+async function getCheapestPrices(skinIds: string[]): Promise<Map<string, { listing: number | null; lastSold: number | null }>> {
   if (skinIds.length === 0) return new Map();
 
   const rows = await sql<{ skin_id: string; cheapest_listing: number | null; cheapest_last_sold: number | null }[]>`
     SELECT sv.skin_id,
            MIN(p.lowest_price_cents) as cheapest_listing,
-           MIN(p.median_price_cents) as cheapest_last_sold
+           MIN(l.avg_last5_cents) as cheapest_last_sold
     FROM skin_variants sv
-    JOIN prices p ON sv.market_hash_name = p.market_hash_name
+    LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
+    LEFT JOIN last_sold_avg l ON sv.market_hash_name = l.market_hash_name
     WHERE sv.skin_id IN ${sql(skinIds)}
     AND sv.is_stattrak = FALSE
     AND sv.is_souvenir = FALSE
     GROUP BY sv.skin_id
   `;
 
-  const map = new Map<string, { price: number; isLastSold: boolean }>();
+  const map = new Map<string, { listing: number | null; lastSold: number | null }>();
   for (const row of rows) {
-    if (row.cheapest_listing != null) {
-      map.set(row.skin_id, { price: row.cheapest_listing, isLastSold: false });
-    } else if (row.cheapest_last_sold != null) {
-      map.set(row.skin_id, { price: row.cheapest_last_sold, isLastSold: true });
-    }
+    map.set(row.skin_id, {
+      listing: row.cheapest_listing,
+      lastSold: row.cheapest_last_sold,
+    });
   }
   return map;
 }

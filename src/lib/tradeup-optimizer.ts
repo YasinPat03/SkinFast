@@ -86,8 +86,8 @@ interface OutputSkin {
   image_url: string | null;
   min_float: number;
   max_float: number;
-  prices_by_wear: Record<string, number>; // wear_name -> lowest_price_cents
-  last_sold_by_wear: Record<string, number>; // wear_name -> median_price_cents (fallback)
+  // wear_name -> last_sold_avg.avg_last5_cents (volume-weighted last 5 sales)
+  last_sold_by_wear: Record<string, number>;
 }
 
 type FloatSource = 'wear_assumption' | 'exact';
@@ -676,28 +676,18 @@ function evaluateResolvedTradeup(
     const outputFloat = calculateOutputFloat(avgNormalizedFloat, output.min_float, output.max_float);
     const outputWear = floatToWear(outputFloat);
 
-    let priceAtWear = output.prices_by_wear[outputWear] ?? null;
-    let isLastSold = false;
-
-    if (priceAtWear === null) {
-      priceAtWear = output.last_sold_by_wear[outputWear] ?? null;
-      if (priceAtWear !== null) isLastSold = true;
-    }
-
-    if (priceAtWear === null) {
-      const availableListings = Object.values(output.prices_by_wear);
-      if (availableListings.length > 0) {
-        priceAtWear = Math.min(...availableListings);
-      }
-    }
+    // Outcome value = last 5 sold avg only (this is what the user would realistically
+    // sell the output for). No fallback to current listings.
+    let priceAtWear = output.last_sold_by_wear[outputWear] ?? null;
 
     if (priceAtWear === null) {
       const availableLastSold = Object.values(output.last_sold_by_wear);
       if (availableLastSold.length > 0) {
         priceAtWear = Math.min(...availableLastSold);
-        isLastSold = true;
       }
     }
+
+    const isLastSold = priceAtWear != null;
 
     if (priceAtWear != null) {
       ev += priceAtWear * prob;
@@ -901,7 +891,7 @@ interface VariantPriceRow {
   wear_name: string;
   market_hash_name: string;
   lowest_price_cents: number | null;
-  median_price_cents: number | null;
+  last_sold_avg_cents: number | null;
 }
 
 async function batchLoadVariantPrices(
@@ -911,10 +901,14 @@ async function batchLoadVariantPrices(
   if (skinIds.length === 0) return new Map();
 
   const rows = await sql<VariantPriceRow[]>`
-    SELECT sv.skin_id, sv.wear_name, sv.market_hash_name, p.lowest_price_cents, p.median_price_cents
+    SELECT sv.skin_id, sv.wear_name, sv.market_hash_name,
+           p.lowest_price_cents, l.avg_last5_cents AS last_sold_avg_cents
     FROM skin_variants sv
-    JOIN prices p ON sv.market_hash_name = p.market_hash_name
+    LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
+    LEFT JOIN last_sold_avg l ON sv.market_hash_name = l.market_hash_name
     WHERE sv.skin_id IN ${sql(skinIds)} AND sv.is_stattrak = ${stattrakFilter} AND sv.is_souvenir = FALSE
+      AND ((p.lowest_price_cents IS NOT NULL AND p.lowest_price_cents > 0)
+        OR (l.avg_last5_cents IS NOT NULL AND l.avg_last5_cents > 0))
   `;
 
   const grouped = new Map<string, VariantPriceRow[]>();
@@ -929,20 +923,14 @@ async function batchLoadVariantPrices(
   return grouped;
 }
 
-function buildWearPriceMaps(
-  rows: VariantPriceRow[]
-): { prices_by_wear: Record<string, number>; last_sold_by_wear: Record<string, number> } {
-  const prices: Record<string, number> = {};
+function buildLastSoldByWear(rows: VariantPriceRow[]): Record<string, number> {
   const lastSold: Record<string, number> = {};
   for (const row of rows) {
-    if (row.lowest_price_cents != null && row.lowest_price_cents > 0) {
-      prices[row.wear_name] = row.lowest_price_cents;
-    }
-    if (row.median_price_cents != null && row.median_price_cents > 0) {
-      lastSold[row.wear_name] = row.median_price_cents;
+    if (row.last_sold_avg_cents != null && row.last_sold_avg_cents > 0) {
+      lastSold[row.wear_name] = row.last_sold_avg_cents;
     }
   }
-  return { prices_by_wear: prices, last_sold_by_wear: lastSold };
+  return lastSold;
 }
 
 async function buildCandidatesWithWears(
@@ -962,26 +950,24 @@ async function buildCandidatesWithWears(
     if (seen.has(key)) continue;
     seen.add(key);
 
-    // Filter to rows with valid prices (matching original SQL WHERE clause)
+    // Inputs strictly use current Steam listings — variants without an active listing
+    // are not selectable as inputs (you can't buy them right now).
     const wears = (variantMap.get(row.skin_id) ?? []).filter(
-      (w) => (w.lowest_price_cents != null && w.lowest_price_cents > 0)
-        || (w.median_price_cents != null && w.median_price_cents > 0)
+      (w) => w.lowest_price_cents != null && w.lowest_price_cents > 0
     );
 
     if (wears.length === 0) continue;
 
     const wearOptions: WearOption[] = wears.map((w) => {
-      const hasActiveListing = w.lowest_price_cents != null && w.lowest_price_cents > 0;
-      const priceToUse = hasActiveListing ? w.lowest_price_cents! : w.median_price_cents!;
       const estFloat = estimateFloat(w.wear_name, row.min_float, row.max_float);
       const tFloat = calculateTFloat(estFloat, row.min_float, row.max_float);
       return {
         wear_name: w.wear_name,
         market_hash_name: w.market_hash_name,
-        price_cents: priceToUse,
+        price_cents: w.lowest_price_cents!,
         assumed_float: estFloat,
         t_float: tFloat,
-        is_last_sold_price: !hasActiveListing,
+        is_last_sold_price: false,
       };
     });
 
@@ -1033,10 +1019,9 @@ async function gatherOutputSkins(
 
   const results: OutputSkin[] = [];
   for (const row of rows) {
-    const { prices_by_wear, last_sold_by_wear } = buildWearPriceMaps(variantMap.get(row.skin_id) ?? []);
+    const last_sold_by_wear = buildLastSoldByWear(variantMap.get(row.skin_id) ?? []);
     results.push({
       ...row,
-      prices_by_wear,
       last_sold_by_wear,
     });
   }
@@ -1069,14 +1054,13 @@ async function gatherOutputSkinsFromCrates(
 
   const results: OutputSkin[] = [];
   for (const row of filteredRows) {
-    const { prices_by_wear, last_sold_by_wear } = buildWearPriceMaps(variantMap.get(row.skin_id) ?? []);
-    // Preserve StatTrak filtering: skip skins with no prices at all
-    if (stattrakFilter && Object.keys(prices_by_wear).length === 0 && Object.keys(last_sold_by_wear).length === 0) {
+    const last_sold_by_wear = buildLastSoldByWear(variantMap.get(row.skin_id) ?? []);
+    // Preserve StatTrak filtering: skip skins with no last-sold data at all
+    if (stattrakFilter && Object.keys(last_sold_by_wear).length === 0) {
       continue;
     }
     results.push({
       ...row,
-      prices_by_wear,
       last_sold_by_wear,
     });
   }
