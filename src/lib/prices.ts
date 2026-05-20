@@ -31,30 +31,78 @@ interface PriceOverviewResponse {
   volume?: string;
 }
 
-type PriceHistoryEntry = [string, number, string];
+// Steam's internal currency IDs. 1=USD, 20=CAD, etc. The SSR'd page returns
+// prices in the currency Steam geolocates from the request IP; Vercel cron
+// hits Steam from US-East, so production sees USD. From a non-US IP, we get
+// other currencies and skip the write to avoid polluting the DB.
+const STEAM_USD_CURRENCY_ID = 1;
 
-function parseHistoryFromHtml(html: string): PriceHistoryEntry[] | null {
-  const match = html.match(/var line1=(\[[\s\S]*?\]);/);
+interface PriceHistoryEntry {
+  time: number;          // Unix seconds
+  price_median: number;  // In the currency's main unit (e.g. dollars), not cents
+  purchases: number;     // Number of sales in this bucket
+}
+
+interface ParsedPriceHistory {
+  ecurrency: number;
+  prices: PriceHistoryEntry[];
+}
+
+// The post-overhaul listing page embeds React Query's hydration state under
+// `window.SSR.renderContext = JSON.parse("…")`. That object contains a
+// `queryData` JSON-string with one entry per SSR'd query, including a
+// `["market","pricehistory",730,<market_hash_name>]` query whose data has the
+// full price history. The page renders all wear variants of a skin, so a
+// single fetch contains history for sibling variants too — we match the
+// exact market_hash_name we asked for.
+function parseHistoryFromHtml(html: string, marketHashName: string): ParsedPriceHistory | null {
+  const match = html.match(/window\.SSR\.renderContext\s*=\s*JSON\.parse\("((?:\\.|[^"\\])*)"\)/);
   if (!match) return null;
+
+  // The capture is the inner content of a JS string literal. Re-quoting and
+  // running it through JSON.parse unescapes it to the underlying JSON, which
+  // we then parse to get the renderContext object.
+  let queryData: { queries?: Array<{ queryKey?: unknown[]; state?: { data?: unknown } }> };
   try {
-    return JSON.parse(match[1]) as PriceHistoryEntry[];
+    const renderContextJson = JSON.parse(`"${match[1]}"`) as string;
+    const renderContext = JSON.parse(renderContextJson) as { queryData?: string };
+    if (!renderContext.queryData) return null;
+    queryData = JSON.parse(renderContext.queryData);
   } catch {
     return null;
   }
-}
 
-function parseLatestSaleFromHistoryHtml(html: string): number | null {
-  const history = parseHistoryFromHtml(html);
-  if (!history) return null;
-  const latest = history[history.length - 1];
-  if (!latest || typeof latest[1] !== 'number' || !Number.isFinite(latest[1])) {
-    return null;
+  for (const query of queryData.queries ?? []) {
+    const key = query.queryKey;
+    if (
+      !Array.isArray(key) ||
+      key.length < 4 ||
+      key[1] !== 'pricehistory' ||
+      key[3] !== marketHashName
+    ) {
+      continue;
+    }
+    const data = query.state?.data as { ecurrency?: number; prices?: PriceHistoryEntry[] } | null | undefined;
+    if (!data || !Array.isArray(data.prices) || typeof data.ecurrency !== 'number') {
+      return null;
+    }
+    return { ecurrency: data.ecurrency, prices: data.prices };
   }
-  return Math.round(latest[1] * 100);
+
+  return null;
 }
 
-// Walks the history backward, accumulating sales weighted by their bucket volume,
-// until we have at least 5 sales (or run out). Returns the weighted average in cents.
+function parseLatestSaleFromHistoryHtml(html: string, marketHashName: string): number | null {
+  const parsed = parseHistoryFromHtml(html, marketHashName);
+  if (!parsed || parsed.ecurrency !== STEAM_USD_CURRENCY_ID) return null;
+  const latest = parsed.prices[parsed.prices.length - 1];
+  if (!latest || !Number.isFinite(latest.price_median)) return null;
+  return Math.round(latest.price_median * 100);
+}
+
+// Walks the history backward, accumulating sales weighted by their bucket
+// `purchases` count, until we have at least 5 sales (or run out). Returns the
+// weighted average in cents.
 function computeLastFiveAvg(
   history: PriceHistoryEntry[]
 ): { avg_cents: number; sample_count: number; last_sale_at: string | null } | null {
@@ -63,12 +111,13 @@ function computeLastFiveAvg(
   let lastSaleAt: string | null = null;
 
   for (let i = history.length - 1; i >= 0 && totalSales < 5; i--) {
-    const [date, price, volStr] = history[i];
-    const vol = typeof volStr === 'string' ? parseInt(volStr, 10) : Number(volStr);
-    if (!Number.isFinite(price) || !Number.isFinite(vol) || vol <= 0) continue;
-    if (lastSaleAt === null) lastSaleAt = date;
-    const take = Math.min(vol, 5 - totalSales);
-    weightedSum += price * take;
+    const { time, price_median, purchases } = history[i];
+    if (!Number.isFinite(price_median) || !Number.isFinite(purchases) || purchases <= 0) continue;
+    if (lastSaleAt === null && Number.isFinite(time)) {
+      lastSaleAt = new Date(time * 1000).toISOString();
+    }
+    const take = Math.min(purchases, 5 - totalSales);
+    weightedSum += price_median * take;
     totalSales += take;
   }
 
@@ -96,7 +145,7 @@ async function fetchLatestSaleFromListingPage(marketHashName: string): Promise<n
   }
 
   const html = await res.text();
-  return parseLatestSaleFromHistoryHtml(html);
+  return parseLatestSaleFromHistoryHtml(html, marketHashName);
 }
 
 export async function refreshSinglePrice(marketHashName: string): Promise<{
@@ -149,7 +198,7 @@ export async function refreshSinglePrice(marketHashName: string): Promise<{
   const volume = data.volume ? parseInt(data.volume.replace(',', ''), 10) : null;
 
   // Some rare/unlisted items return success=true with no price fields from priceoverview,
-  // but the market listing page still embeds recent sale history in `line1`.
+  // but the market listing page still embeds recent sale history we can fall back to.
   if (lowest == null && median == null) {
     median = await fetchLatestSaleFromListingPage(marketHashName);
   }
@@ -168,7 +217,7 @@ export async function refreshSinglePrice(marketHashName: string): Promise<{
   return { lowest_price_cents: lowest, median_price_cents: median, volume };
 }
 
-// Fetches the market listing page, parses the embedded sales history (`line1`),
+// Fetches the market listing page, parses the embedded sales history,
 // and upserts the volume-weighted average of the last 5 individual sales into `last_sold_avg`.
 export async function refreshLastSoldAvg(marketHashName: string): Promise<{
   avg_last5_cents: number;
@@ -199,8 +248,18 @@ export async function refreshLastSoldAvg(marketHashName: string): Promise<{
 
   if (res.ok) {
     const html = await res.text();
-    const history = parseHistoryFromHtml(html);
-    const result = history ? computeLastFiveAvg(history) : null;
+    const parsed = parseHistoryFromHtml(html, marketHashName);
+    if (parsed && parsed.ecurrency !== STEAM_USD_CURRENCY_ID) {
+      // Steam geolocates currency from the request IP. From a non-US IP we'd
+      // write CAD/EUR/etc. into a column the rest of the app treats as cents
+      // USD. Skip the upsert and let the row stay stale; the next run from a
+      // US IP (Vercel cron) will populate it correctly.
+      console.warn(
+        `Skipping ${marketHashName}: Steam returned ecurrency=${parsed.ecurrency} (need ${STEAM_USD_CURRENCY_ID} for USD). Run from a US IP.`
+      );
+      return null;
+    }
+    const result = parsed ? computeLastFiveAvg(parsed.prices) : null;
     if (result) {
       avg = result.avg_cents;
       sampleCount = result.sample_count;
