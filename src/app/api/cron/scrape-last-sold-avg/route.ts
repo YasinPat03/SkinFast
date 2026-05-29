@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runLastSoldAvgChunk } from '@/lib/prices';
 
-// At ~3s per request, 50 items ≈ 150s — within Vercel Pro's 300s limit.
+// BATCH_SIZE now caps listing-page FETCHES, not variants: one fetch fills every
+// sibling variant on the page (~8x rows). At ~3s/fetch, 50 fetches ≈ 150s —
+// within Vercel Pro's 300s limit — yet clears several hundred variants per run.
 const BATCH_SIZE = parseInt(process.env.LAST_SOLD_AVG_BATCH_SIZE ?? '50', 10);
 const STALE_HOURS = parseInt(process.env.LAST_SOLD_AVG_STALE_HOURS ?? '24', 10);
 
@@ -23,7 +25,8 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     status: 'ok',
-    attempted: result.attempted,
+    fetches: result.fetches,
+    rows_written: result.rowsWritten,
     with_data: result.withData,
     no_data: result.noData,
   });

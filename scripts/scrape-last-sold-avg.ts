@@ -33,7 +33,8 @@ async function main() {
   console.log('=== Last-Sold Avg (last 5) Scraper ===');
   console.log(`batch-size=${batchSize}, stale-hours=${staleHours}, loop=${loop}\n`);
 
-  let totalAttempted = 0;
+  let totalFetches = 0;
+  let totalRowsWritten = 0;
   let totalWithData = 0;
   let totalNoData = 0;
   let chunkNum = 0;
@@ -41,19 +42,20 @@ async function main() {
   do {
     chunkNum++;
     const result = await runLastSoldAvgChunk({ batchSize, staleHours });
-    totalAttempted += result.attempted;
+    totalFetches += result.fetches;
+    totalRowsWritten += result.rowsWritten;
     totalWithData += result.withData;
     totalNoData += result.noData;
 
     console.log(
-      `[chunk ${chunkNum}] attempted=${result.attempted}, with_data=${result.withData}, no_data=${result.noData}`
+      `[chunk ${chunkNum}] fetches=${result.fetches}, rows_written=${result.rowsWritten}, with_data=${result.withData}, no_data=${result.noData}`
     );
 
-    if (!loop || result.attempted === 0) break;
+    if (!loop || result.fetches === 0) break;
   } while (true);
 
   console.log(`\n=== Done ===`);
-  console.log(`Chunks: ${chunkNum}, attempted: ${totalAttempted}, with data: ${totalWithData}, no data: ${totalNoData}`);
+  console.log(`Chunks: ${chunkNum}, fetches: ${totalFetches}, rows written: ${totalRowsWritten}, with data: ${totalWithData}, no data: ${totalNoData}`);
 
   await sql.end();
 }

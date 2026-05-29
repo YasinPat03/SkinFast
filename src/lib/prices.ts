@@ -52,12 +52,15 @@ interface ParsedPriceHistory {
 // `window.SSR.renderContext = JSON.parse("…")`. That object contains a
 // `queryData` JSON-string with one entry per SSR'd query, including a
 // `["market","pricehistory",730,<market_hash_name>]` query whose data has the
-// full price history. The page renders all wear variants of a skin, so a
-// single fetch contains history for sibling variants too — we match the
-// exact market_hash_name we asked for.
-function parseHistoryFromHtml(html: string, marketHashName: string): ParsedPriceHistory | null {
+// full price history. Crucially, the page renders the wear/StatTrak variant
+// selector, so a single fetch contains the pricehistory for ALL sibling
+// variants of the skin (e.g. fetching the FT page yields FN/MW/FT/WW/BS plus
+// their StatTrak counterparts). This returns every history keyed by
+// market_hash_name so one fetch can populate the whole family at once.
+function parseAllHistoriesFromHtml(html: string): Map<string, ParsedPriceHistory> {
+  const result = new Map<string, ParsedPriceHistory>();
   const match = html.match(/window\.SSR\.renderContext\s*=\s*JSON\.parse\("((?:\\.|[^"\\])*)"\)/);
-  if (!match) return null;
+  if (!match) return result;
 
   // The capture is the inner content of a JS string literal. Re-quoting and
   // running it through JSON.parse unescapes it to the underlying JSON, which
@@ -66,10 +69,10 @@ function parseHistoryFromHtml(html: string, marketHashName: string): ParsedPrice
   try {
     const renderContextJson = JSON.parse(`"${match[1]}"`) as string;
     const renderContext = JSON.parse(renderContextJson) as { queryData?: string };
-    if (!renderContext.queryData) return null;
+    if (!renderContext.queryData) return result;
     queryData = JSON.parse(renderContext.queryData);
   } catch {
-    return null;
+    return result;
   }
 
   for (const query of queryData.queries ?? []) {
@@ -78,18 +81,22 @@ function parseHistoryFromHtml(html: string, marketHashName: string): ParsedPrice
       !Array.isArray(key) ||
       key.length < 4 ||
       key[1] !== 'pricehistory' ||
-      key[3] !== marketHashName
+      typeof key[3] !== 'string'
     ) {
       continue;
     }
     const data = query.state?.data as { ecurrency?: number; prices?: PriceHistoryEntry[] } | null | undefined;
     if (!data || !Array.isArray(data.prices) || typeof data.ecurrency !== 'number') {
-      return null;
+      continue;
     }
-    return { ecurrency: data.ecurrency, prices: data.prices };
+    result.set(key[3], { ecurrency: data.ecurrency, prices: data.prices });
   }
 
-  return null;
+  return result;
+}
+
+function parseHistoryFromHtml(html: string, marketHashName: string): ParsedPriceHistory | null {
+  return parseAllHistoriesFromHtml(html).get(marketHashName) ?? null;
 }
 
 function parseLatestSaleFromHistoryHtml(html: string, marketHashName: string): number | null {
@@ -217,13 +224,40 @@ export async function refreshSinglePrice(marketHashName: string): Promise<{
   return { lowest_price_cents: lowest, median_price_cents: median, volume };
 }
 
-// Fetches the market listing page, parses the embedded sales history,
-// and upserts the volume-weighted average of the last 5 individual sales into `last_sold_avg`.
-export async function refreshLastSoldAvg(marketHashName: string): Promise<{
-  avg_last5_cents: number;
-  sample_count: number;
+interface LastSoldAvgRow {
+  market_hash_name: string;
+  avg_last5_cents: number | null;
+  sample_count: number | null;
   last_sale_at: string | null;
-} | null> {
+}
+
+// Batched upsert. `updated_at` uses its DEFAULT NOW() on insert and is bumped
+// explicitly on conflict, so the staleness filter in runLastSoldAvgChunk works
+// for both new and refreshed rows.
+async function upsertLastSoldAvg(rows: LastSoldAvgRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  await sql`
+    INSERT INTO last_sold_avg ${sql(rows, 'market_hash_name', 'avg_last5_cents', 'sample_count', 'last_sale_at')}
+    ON CONFLICT (market_hash_name) DO UPDATE SET
+      avg_last5_cents = EXCLUDED.avg_last5_cents,
+      sample_count = EXCLUDED.sample_count,
+      last_sale_at = EXCLUDED.last_sale_at,
+      updated_at = NOW()
+  `;
+}
+
+// Fetches a single market listing page and upserts the volume-weighted average
+// of the last 5 individual sales for EVERY sibling variant embedded in that
+// page (all wears + StatTrak), not just `marketHashName`. One fetch therefore
+// populates the whole skin family, cutting the request count (the throttled,
+// rate-limited bottleneck) by ~8x versus fetching one page per variant.
+//
+// Returns the set of market_hash_names it wrote (so callers can skip siblings
+// already covered) and the computed result for the requested variant.
+export async function refreshLastSoldAvgGroup(marketHashName: string): Promise<{
+  written: string[];
+  requested: { avg_last5_cents: number; sample_count: number; last_sale_at: string | null } | null;
+}> {
   await throttle();
 
   const encodedName = encodeURIComponent(marketHashName);
@@ -235,87 +269,125 @@ export async function refreshLastSoldAvg(marketHashName: string): Promise<{
     },
   });
 
+  // Don't write anything on a rate-limit; let the row stay stale and retry next run.
   if (res.status === 429) {
     console.warn(`Rate limited fetching listing page for ${marketHashName}`);
-    return null;
+    return { written: [], requested: null };
   }
 
-  // Write a sentinel row even on no-data so the cron doesn't retry this variant
-  // every minute. The `updated_at` filter on the query will skip it until it goes stale.
-  let avg: number | null = null;
-  let sampleCount: number | null = null;
-  let lastSaleAt: string | null = null;
-
-  if (res.ok) {
-    const html = await res.text();
-    const parsed = parseHistoryFromHtml(html, marketHashName);
-    if (parsed && parsed.ecurrency !== STEAM_USD_CURRENCY_ID) {
-      // Steam geolocates currency from the request IP. From a non-US IP we'd
-      // write CAD/EUR/etc. into a column the rest of the app treats as cents
-      // USD. Skip the upsert and let the row stay stale; the next run from a
-      // US IP (Vercel cron) will populate it correctly.
-      console.warn(
-        `Skipping ${marketHashName}: Steam returned ecurrency=${parsed.ecurrency} (need ${STEAM_USD_CURRENCY_ID} for USD). Run from a US IP.`
-      );
-      return null;
-    }
-    const result = parsed ? computeLastFiveAvg(parsed.prices) : null;
-    if (result) {
-      avg = result.avg_cents;
-      sampleCount = result.sample_count;
-      lastSaleAt = result.last_sale_at;
-    }
-  } else {
+  if (!res.ok) {
     console.warn(`HTTP ${res.status} fetching listing page for ${marketHashName}`);
+    // Sentinel for the requested variant so the cron doesn't hammer it every run.
+    await upsertLastSoldAvg([{ market_hash_name: marketHashName, avg_last5_cents: null, sample_count: null, last_sale_at: null }]);
+    return { written: [marketHashName], requested: null };
   }
 
-  await sql`
-    INSERT INTO last_sold_avg (market_hash_name, avg_last5_cents, sample_count, last_sale_at, updated_at)
-    VALUES (${marketHashName}, ${avg}, ${sampleCount}, ${lastSaleAt}, NOW())
-    ON CONFLICT (market_hash_name) DO UPDATE SET
-      avg_last5_cents = EXCLUDED.avg_last5_cents,
-      sample_count = EXCLUDED.sample_count,
-      last_sale_at = EXCLUDED.last_sale_at,
-      updated_at = NOW()
+  const html = await res.text();
+  const histories = parseAllHistoriesFromHtml(html);
+
+  // Steam geolocates currency from the request IP. From a non-US IP every
+  // variant on the page comes back in CAD/EUR/etc., which would corrupt a
+  // column the rest of the app treats as USD cents. Skip the whole page and
+  // leave the rows stale; the next run from a US IP (Vercel cron) fixes it.
+  for (const h of histories.values()) {
+    if (h.ecurrency !== STEAM_USD_CURRENCY_ID) {
+      console.warn(
+        `Skipping page for ${marketHashName}: Steam returned ecurrency=${h.ecurrency} (need ${STEAM_USD_CURRENCY_ID} for USD). Run from a US IP.`
+      );
+      return { written: [], requested: null };
+    }
+  }
+
+  // Only write variants we actually track — last_sold_avg has an FK to
+  // skin_variants, and the page may list variants we don't store. Always
+  // include the requested name so a history-less page still leaves a sentinel.
+  const names = [...histories.keys()];
+  if (!names.includes(marketHashName)) names.push(marketHashName);
+  const tracked = await sql<{ market_hash_name: string }[]>`
+    SELECT market_hash_name FROM skin_variants WHERE market_hash_name = ANY(${names})
   `;
 
-  if (avg === null) return null;
-  return { avg_last5_cents: avg, sample_count: sampleCount!, last_sale_at: lastSaleAt };
+  const rows: LastSoldAvgRow[] = [];
+  let requested: { avg_last5_cents: number; sample_count: number; last_sale_at: string | null } | null = null;
+
+  for (const { market_hash_name } of tracked) {
+    const parsed = histories.get(market_hash_name);
+    const result = parsed ? computeLastFiveAvg(parsed.prices) : null;
+    rows.push({
+      market_hash_name,
+      avg_last5_cents: result ? result.avg_cents : null,
+      sample_count: result ? result.sample_count : null,
+      last_sale_at: result ? result.last_sale_at : null,
+    });
+    if (market_hash_name === marketHashName && result) {
+      requested = { avg_last5_cents: result.avg_cents, sample_count: result.sample_count, last_sale_at: result.last_sale_at };
+    }
+  }
+
+  await upsertLastSoldAvg(rows);
+  return { written: rows.map((r) => r.market_hash_name), requested };
+}
+
+// Backward-compatible single-variant wrapper. Fetches the page (which also
+// fills the variant's siblings) and returns just the requested variant's result.
+export async function refreshLastSoldAvg(marketHashName: string): Promise<{
+  avg_last5_cents: number;
+  sample_count: number;
+  last_sale_at: string | null;
+} | null> {
+  const { requested } = await refreshLastSoldAvgGroup(marketHashName);
+  return requested;
 }
 
 // Process one chunk of variants needing a last-sold-avg refresh. Shared by the
-// CLI script and the Vercel cron route so both follow the same incremental pattern.
+// CLI script and the Vercel cron route so both follow the same incremental
+// pattern. Because one listing-page fetch fills every sibling variant, we cap
+// work by number of FETCHES (the rate-limited resource), over-selecting
+// candidates and skipping any variant a prior fetch in this run already wrote.
 export async function runLastSoldAvgChunk(opts: {
   batchSize: number;
   staleHours: number;
-}): Promise<{ attempted: number; withData: number; noData: number }> {
+}): Promise<{ fetches: number; rowsWritten: number; withData: number; noData: number }> {
   const { batchSize, staleHours } = opts;
 
-  const targets = await sql<{ market_hash_name: string }[]>`
+  // One fetch clears up to ~10 sibling variants, so pull well beyond batchSize
+  // candidates to keep `batchSize` distinct pages worth of work available.
+  const candidates = await sql<{ market_hash_name: string }[]>`
     SELECT sv.market_hash_name
     FROM skin_variants sv
     LEFT JOIN last_sold_avg l ON sv.market_hash_name = l.market_hash_name
     WHERE l.market_hash_name IS NULL
        OR l.updated_at < NOW() - (${staleHours} || ' hours')::INTERVAL
     ORDER BY l.updated_at NULLS FIRST, sv.market_hash_name
-    LIMIT ${batchSize}
+    LIMIT ${batchSize * 15}
   `;
 
+  const processed = new Set<string>();
+  let fetches = 0;
+  let rowsWritten = 0;
   let withData = 0;
   let noData = 0;
 
-  for (const { market_hash_name } of targets) {
+  for (const { market_hash_name } of candidates) {
+    if (fetches >= batchSize) break;
+    if (processed.has(market_hash_name)) continue;
+
     try {
-      const result = await refreshLastSoldAvg(market_hash_name);
-      if (result) withData++;
+      const { written, requested } = await refreshLastSoldAvgGroup(market_hash_name);
+      fetches++;
+      rowsWritten += written.length;
+      for (const w of written) processed.add(w);
+      processed.add(market_hash_name);
+      if (requested) withData++;
       else noData++;
     } catch (err) {
       noData++;
+      processed.add(market_hash_name);
       console.warn(`error on ${market_hash_name}: ${err}`);
     }
   }
 
-  return { attempted: targets.length, withData, noData };
+  return { fetches, rowsWritten, withData, noData };
 }
 
 // Treat variants with no listing and no last-sold price as stale so they can be retried immediately.
