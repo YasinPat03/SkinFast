@@ -347,12 +347,28 @@ export async function evaluateTradeupContract(
   const inputSkinMap = new Map(inputSkinRows.map((row) => [row.id, row]));
 
   const inputHashNames = [...new Set(inputs.map((input) => input.market_hash_name))];
-  const inputVariantRows = await sql<{ market_hash_name: string; is_souvenir: boolean }[]>`
-    SELECT market_hash_name, is_souvenir
+  const inputVariantRows = await sql<{ market_hash_name: string; skin_id: string; is_stattrak: boolean; is_souvenir: boolean }[]>`
+    SELECT market_hash_name, skin_id, is_stattrak, is_souvenir
     FROM skin_variants
     WHERE market_hash_name IN ${sql(inputHashNames)}
   `;
   const inputVariantMap = new Map(inputVariantRows.map((row) => [row.market_hash_name, row]));
+
+  // Each input must actually sit in the collection/case it is attributed to, at the input
+  // rarity, and (for gold contracts) not be a rare special item itself.
+  const membershipRows = isGold
+    ? await sql<{ collection_id: string; skin_id: string }[]>`
+        SELECT crate_id AS collection_id, skin_id
+        FROM crate_skins
+        WHERE skin_id IN ${sql(inputSkinIds)} AND rarity_id = ${inputRarityId} AND is_rare = FALSE
+      `
+    : await sql<{ collection_id: string; skin_id: string }[]>`
+        SELECT collection_id, skin_id
+        FROM collection_skins
+        WHERE skin_id IN ${sql(inputSkinIds)} AND rarity_id = ${inputRarityId}
+          AND collection_id NOT IN ${sql(TRADEUP_EXCLUDED_COLLECTION_IDS)}
+      `;
+  const membershipKeys = new Set(membershipRows.map((row) => `${row.collection_id}|${row.skin_id}`));
 
   const resolvedInputs: ResolvedTradeupInput[] = [];
   for (let index = 0; index < inputs.length; index++) {
@@ -362,11 +378,34 @@ export async function evaluateTradeupContract(
       return { error: `Input skin not found: ${input.skin_id}` };
     }
 
+    if (isKnifeOrGloveWeapon(skin.weapon_name)) {
+      return { error: `Knives and gloves cannot be used as tradeup inputs (${skin.name})` };
+    }
+
     if (skin.rarity_id !== inputRarityId) {
       return { error: `Invalid input rarity for ${skin.name}` };
     }
 
-    const isSouvenirInput = inputVariantMap.get(input.market_hash_name)?.is_souvenir ?? false;
+    if (!membershipKeys.has(`${input.collection_id}|${skin.id}`)) {
+      return {
+        error: `${skin.name} is not an eligible ${isGold ? 'Covert case' : 'collection'} input for ${input.collection_id}`,
+      };
+    }
+
+    const variant = inputVariantMap.get(input.market_hash_name);
+    if (!variant || variant.skin_id !== skin.id) {
+      return { error: `Unknown market listing for ${skin.name}: ${input.market_hash_name}` };
+    }
+
+    if (variant.is_stattrak !== isStatTrak) {
+      return {
+        error: isStatTrak
+          ? `All inputs of a StatTrak contract must be StatTrak (${skin.name})`
+          : `StatTrak items cannot be mixed into a non-StatTrak contract (${skin.name})`,
+      };
+    }
+
+    const isSouvenirInput = variant.is_souvenir;
     if (isSouvenirInput && !souvenirInputsAllowed(isStatTrak)) {
       return { error: `Souvenir items cannot be used in a StatTrak contract (${skin.name})` };
     }
@@ -400,6 +439,15 @@ export async function evaluateTradeupContract(
 
   const collectionNameMap = new Map(outputSkins.map((output) => [output.collection_id, output.collection_name]));
   for (const input of resolvedInputs) {
+    // Every input's collection must contain at least one item at the output tier
+    // (a knife, for StatTrak gold contracts), otherwise the game refuses the contract.
+    if (!collectionNameMap.has(input.collection_id)) {
+      return {
+        error: isGold && isStatTrak
+          ? `${input.skin_name} comes from a case with no knives; StatTrak Covert contracts can only produce knives`
+          : `${input.skin_name}'s ${isGold ? 'case' : 'collection'} has no items at the output rarity`,
+      };
+    }
     input.collection_name = collectionNameMap.get(input.collection_id) ?? input.collection_name;
   }
 
