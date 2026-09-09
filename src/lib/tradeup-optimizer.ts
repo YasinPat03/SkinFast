@@ -660,7 +660,9 @@ function evaluateResolvedTradeup(
   for (const [collectionId, count] of inputsPerCollection) {
     const collectionOutputs = outputsByCollection.get(collectionId) ?? [];
     const numOutputs = collectionOutputs.length;
-    if (numOutputs === 0) continue;
+    // Every input's collection must be able to produce an output; the game refuses the
+    // contract otherwise, so don't silently drop the probability mass.
+    if (numOutputs === 0) return null;
 
     const probPerSkin = count / numInputs / numOutputs;
     for (const output of collectionOutputs) {
@@ -800,11 +802,16 @@ async function gatherInputCandidates(
   let targetCollectionIds: Set<string>;
   let rawTargetInputs: RawInput[];
 
+  // A StatTrak Covert contract can only produce a StatTrak knife, so Coverts from gloves-only
+  // cases have no valid output and are not accepted by the game.
+  const knifeCrates = isGold && stattrakFilter ? await getCratesWithKnifeOutputs() : null;
+  const crateAccepted = (crateId: string) => knifeCrates == null || knifeCrates.has(crateId);
+
   if (isGold) {
     const crates = await sql<{ collection_id: string }[]>`
       SELECT crate_id as collection_id FROM crate_skins WHERE skin_id = ${targetSkinId} AND is_rare = TRUE
     `;
-    targetCollectionIds = new Set(crates.map((c) => c.collection_id));
+    targetCollectionIds = new Set(crates.map((c) => c.collection_id).filter(crateAccepted));
     if (targetCollectionIds.size === 0) return { targetCandidates: [], fillerCandidates: [], targetCollectionIds };
 
     const ids = [...targetCollectionIds];
@@ -855,7 +862,11 @@ async function gatherInputCandidates(
     `;
   }
 
-  const targetCandidates = await buildCandidatesWithWears(rawTargetInputs, stattrakFilter, true);
+  const targetCandidates = await buildCandidatesWithWears(
+    rawTargetInputs.filter((row) => crateAccepted(row.collection_id)),
+    stattrakFilter,
+    true
+  );
 
   // Get fillers from other collections/crates
   let rawFillerInputs: RawInput[];
@@ -898,9 +909,23 @@ async function gatherInputCandidates(
     `;
   }
 
-  const fillerCandidates = await buildCandidatesWithWears(rawFillerInputs, stattrakFilter, false);
+  const fillerCandidates = await buildCandidatesWithWears(
+    rawFillerInputs.filter((row) => crateAccepted(row.collection_id)),
+    stattrakFilter,
+    false
+  );
 
   return { targetCandidates, fillerCandidates, targetCollectionIds };
+}
+
+async function getCratesWithKnifeOutputs(): Promise<Set<string>> {
+  const rows = await sql<{ crate_id: string; weapon_name: string }[]>`
+    SELECT DISTINCT cs.crate_id, s.weapon_name
+    FROM crate_skins cs
+    JOIN skins s ON s.id = cs.skin_id
+    WHERE cs.is_rare = TRUE
+  `;
+  return new Set(rows.filter((row) => isKnifeWeapon(row.weapon_name)).map((row) => row.crate_id));
 }
 
 // ── Batch Variant+Price Loading ──────────────────────────────────
