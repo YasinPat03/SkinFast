@@ -31,6 +31,7 @@ interface VariantPriceRow {
   skin_id: string;
   wear_name: string;
   market_hash_name: string;
+  is_souvenir: boolean;
   lowest_price_cents: number | null;
   last_sold_avg_cents: number | null;
 }
@@ -40,6 +41,7 @@ interface PriceOption {
   market_hash_name: string;
   price_cents: number;
   is_last_sold_price: boolean;
+  is_souvenir: boolean;
   assumed_float: number;
   t_float: number;
 }
@@ -83,6 +85,7 @@ export interface TradeupLeaderboardEntry {
     market_hash_name: string;
     price_cents: number;
     is_last_sold_price: boolean;
+    is_souvenir: boolean;
     expected_float: number;
   };
   total_cost_cents: number;
@@ -148,18 +151,20 @@ const getCachedTradeupContracts = unstable_cache(
         JOIN crates cr ON cr.id = cs.crate_id
         JOIN skins s ON s.id = cs.skin_id
       `,
+      // Souvenir rows are loaded too: they are legal (non-StatTrak) inputs since May 2026.
+      // They are never used for output pricing — see buildPriceMaps.
       sql<VariantPriceRow[]>`
         SELECT
           sv.skin_id,
           sv.wear_name,
           sv.market_hash_name,
+          sv.is_souvenir,
           p.lowest_price_cents,
           l.avg_last5_cents AS last_sold_avg_cents
         FROM skin_variants sv
         LEFT JOIN prices p ON p.market_hash_name = sv.market_hash_name
         LEFT JOIN last_sold_avg l ON l.market_hash_name = sv.market_hash_name
         WHERE sv.is_stattrak = FALSE
-          AND sv.is_souvenir = FALSE
           AND (
             (p.lowest_price_cents IS NOT NULL AND p.lowest_price_cents > 0)
             OR (l.avg_last5_cents IS NOT NULL AND l.avg_last5_cents > 0)
@@ -178,7 +183,7 @@ const getCachedTradeupContracts = unstable_cache(
       return a.total_cost_cents - b.total_cost_cents;
     });
   },
-  ['tradeup-leaderboard-contracts-v4'],
+  ['tradeup-leaderboard-contracts-v5'],
   { revalidate: 900 }
 );
 
@@ -223,6 +228,7 @@ function buildPriceMaps(
         market_hash_name: row.market_hash_name,
         price_cents: row.lowest_price_cents!,
         is_last_sold_price: false,
+        is_souvenir: row.is_souvenir,
         assumed_float: assumedFloat,
         t_float: calculateTFloat(assumedFloat, meta.min_float, meta.max_float),
       };
@@ -236,7 +242,8 @@ function buildPriceMaps(
     }
 
     // Outputs are valued at the last-5 sold avg (what the user would realistically realize selling).
-    if (lastSoldAvg != null) {
+    // A contract never produces a souvenir, so only normal variants price outputs.
+    if (lastSoldAvg != null && !row.is_souvenir) {
       let lookup = priceLookupBySkinId.get(row.skin_id);
       if (!lookup) {
         lookup = {
@@ -497,7 +504,7 @@ function buildContractEntry({
   const roiPercent = totalCost > 0 ? Math.round((ev / totalCost) * 10000) / 100 : 0;
 
   return {
-    id: `${contractType}:${collectionId}:${inputRow.skin_id}:${wearOption.wear_name}`,
+    id: `${contractType}:${collectionId}:${inputRow.skin_id}:${wearOption.wear_name}${wearOption.is_souvenir ? ':souvenir' : ''}`,
     contract_type: contractType,
     collection_id: collectionId,
     collection_name: collectionName,
@@ -511,6 +518,7 @@ function buildContractEntry({
       market_hash_name: wearOption.market_hash_name,
       price_cents: wearOption.price_cents,
       is_last_sold_price: wearOption.is_last_sold_price,
+      is_souvenir: wearOption.is_souvenir,
       expected_float: Math.round(wearOption.assumed_float * 100000) / 100000,
     },
     total_cost_cents: totalCost,

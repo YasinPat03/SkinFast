@@ -19,6 +19,7 @@ interface TradeupGroupedInput {
   wear_name: string;
   price_cents: number;
   is_last_sold_price: boolean;
+  is_souvenir: boolean;
   collection_id: string;
   collection_name: string;
   market_hash_name: string;
@@ -34,6 +35,7 @@ interface TradeupConcreteInput {
   wear_name: string;
   price_cents: number;
   is_last_sold_price: boolean;
+  is_souvenir: boolean;
   collection_id: string;
   collection_name: string;
   market_hash_name: string;
@@ -349,6 +351,11 @@ function TradeupCard({
                     <ScrambleText text={`${input.quantity}x ${input.skin_name}`} scrambleSpeed={20} delay={400}/>
                   </span>
                   <span className="text-zinc-400 text-xs">(<ScrambleText text={input.wear_name} scrambleSpeed={20} delay={400}/>)</span>
+                  {input.is_souvenir && (
+                    <span className="text-[10px] uppercase bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded">
+                      souvenir
+                    </span>
+                  )}
                   <span className="ml-auto text-zinc-400">
                     <ScrambleText text={`${formatPrice(input.price_cents)} ea`} scrambleSpeed={20} delay={400}/>
                   </span>
@@ -397,7 +404,7 @@ function TradeupCard({
                   <div className="min-w-0 flex-1">
                     <div className="text-sm text-zinc-300 truncate">{input.skin_name}</div>
                     <div className="text-xs text-zinc-400">
-                      {input.wear_name} · range {input.min_float.toFixed(2)}-{input.max_float.toFixed(2)}
+                      {input.is_souvenir ? 'Souvenir · ' : ''}{input.wear_name} · range {input.min_float.toFixed(2)}-{input.max_float.toFixed(2)}
                     </div>
                   </div>
                   <input

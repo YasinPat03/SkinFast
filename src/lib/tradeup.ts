@@ -48,7 +48,11 @@ export interface TradeupEligibility {
     id: string;
     name: string;
     image_url: string | null;
-    input_skins: (SkinRow & { cheapest_price_cents: number | null; is_last_sold_price: boolean })[];
+    input_skins: (SkinRow & {
+      cheapest_price_cents: number | null;
+      is_last_sold_price: boolean;
+      cheapest_is_souvenir: boolean;
+    })[];
     output_skins: (SkinRow & { cheapest_price_cents: number | null; is_last_sold_price: boolean })[];
   }[];
 }
@@ -144,7 +148,12 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
       .filter((s) => s.collection_id === col.id)
       .map((s) => {
         const priceInfo = cheapestPrices.get(s.id);
-        return { ...s, cheapest_price_cents: priceInfo?.listing ?? null, is_last_sold_price: false };
+        return {
+          ...s,
+          cheapest_price_cents: priceInfo?.listing ?? null,
+          is_last_sold_price: false,
+          cheapest_is_souvenir: priceInfo?.listingIsSouvenir ?? false,
+        };
       });
 
     const colOutputs = outputSkins
@@ -222,7 +231,12 @@ async function getGoldTradeupEligibility(skinId: string): Promise<TradeupEligibi
       .filter((s) => s.collection_id === crate.id)
       .map((s) => {
         const priceInfo = cheapestPrices.get(s.id);
-        return { ...s, cheapest_price_cents: priceInfo?.listing ?? null, is_last_sold_price: false };
+        return {
+          ...s,
+          cheapest_price_cents: priceInfo?.listing ?? null,
+          is_last_sold_price: false,
+          cheapest_is_souvenir: priceInfo?.listingIsSouvenir ?? false,
+        };
       });
 
     const crateOutputs = outputSkins
@@ -255,30 +269,48 @@ async function getGoldTradeupEligibility(skinId: string): Promise<TradeupEligibi
   };
 }
 
-// For each non-StatTrak, non-Souvenir skin, return both the cheapest current listing
-// (for input pricing) and the cheapest last-5-sold avg (for output pricing).
-async function getCheapestPrices(skinIds: string[]): Promise<Map<string, { listing: number | null; lastSold: number | null }>> {
+interface CheapestPriceInfo {
+  listing: number | null;
+  listingIsSouvenir: boolean;
+  lastSold: number | null;
+}
+
+// For each non-StatTrak skin, return the cheapest current listing for input pricing
+// (normal or souvenir — both are legal inputs) and the cheapest last-5-sold avg for
+// output pricing (normal variants only, since a contract never produces a souvenir).
+async function getCheapestPrices(skinIds: string[]): Promise<Map<string, CheapestPriceInfo>> {
   if (skinIds.length === 0) return new Map();
 
-  const rows = await sql<{ skin_id: string; cheapest_listing: number | null; cheapest_last_sold: number | null }[]>`
-    SELECT sv.skin_id,
-           MIN(p.lowest_price_cents) as cheapest_listing,
-           MIN(l.avg_last5_cents) as cheapest_last_sold
+  const rows = await sql<{
+    skin_id: string;
+    is_souvenir: boolean;
+    lowest_price_cents: number | null;
+    avg_last5_cents: number | null;
+  }[]>`
+    SELECT sv.skin_id, sv.is_souvenir, p.lowest_price_cents, l.avg_last5_cents
     FROM skin_variants sv
     LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
     LEFT JOIN last_sold_avg l ON sv.market_hash_name = l.market_hash_name
     WHERE sv.skin_id IN ${sql(skinIds)}
     AND sv.is_stattrak = FALSE
-    AND sv.is_souvenir = FALSE
-    GROUP BY sv.skin_id
   `;
 
-  const map = new Map<string, { listing: number | null; lastSold: number | null }>();
+  const map = new Map<string, CheapestPriceInfo>();
   for (const row of rows) {
-    map.set(row.skin_id, {
-      listing: row.cheapest_listing,
-      lastSold: row.cheapest_last_sold,
-    });
+    const info = map.get(row.skin_id) ?? { listing: null, listingIsSouvenir: false, lastSold: null };
+
+    if (row.lowest_price_cents != null && row.lowest_price_cents > 0
+      && (info.listing == null || row.lowest_price_cents < info.listing)) {
+      info.listing = row.lowest_price_cents;
+      info.listingIsSouvenir = row.is_souvenir;
+    }
+
+    if (!row.is_souvenir && row.avg_last5_cents != null && row.avg_last5_cents > 0
+      && (info.lastSold == null || row.avg_last5_cents < info.lastSold)) {
+      info.lastSold = row.avg_last5_cents;
+    }
+
+    map.set(row.skin_id, info);
   }
   return map;
 }

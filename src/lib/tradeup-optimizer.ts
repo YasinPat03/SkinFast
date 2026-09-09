@@ -7,6 +7,7 @@ import {
   isKnifeOrGloveWeapon,
   isKnifeWeapon,
   isTradeupExcludedCollectionId,
+  souvenirInputsAllowed,
 } from './tradeup-rules';
 import {
   calculateOutputFloat,
@@ -37,6 +38,7 @@ interface WearOption {
   assumed_float: number;
   t_float: number;
   is_last_sold_price: boolean;
+  is_souvenir: boolean;
 }
 
 interface InputCandidate {
@@ -77,6 +79,7 @@ export interface TradeupConcreteInput {
   wear_name: string;
   price_cents: number;
   is_last_sold_price: boolean;
+  is_souvenir: boolean;
   collection_id: string;
   collection_name: string;
   market_hash_name: string;
@@ -95,6 +98,7 @@ export interface TradeupGroupedInput {
   wear_name: string;
   price_cents: number;
   is_last_sold_price: boolean;
+  is_souvenir: boolean;
   collection_id: string;
   collection_name: string;
   market_hash_name: string;
@@ -173,11 +177,13 @@ export async function findBestTradeup(
   if (!targetSkin) return { error: 'Target skin not found' };
 
   const stattrakFilter = isStatTrak;
+  // The contract output is always a normal (or StatTrak) item, never a souvenir.
   const targetPriceRows = await sql<{ lowest_price_cents: number }[]>`
     SELECT p.lowest_price_cents
     FROM skin_variants sv
     JOIN prices p ON sv.market_hash_name = p.market_hash_name
-    WHERE sv.skin_id = ${targetSkinId} AND sv.wear_name = ${targetWear} AND sv.is_stattrak = ${stattrakFilter}
+    WHERE sv.skin_id = ${targetSkinId} AND sv.wear_name = ${targetWear}
+      AND sv.is_stattrak = ${stattrakFilter} AND sv.is_souvenir = FALSE
   `;
   const targetPrice = targetPriceRows[0];
 
@@ -327,6 +333,14 @@ export async function evaluateTradeupContract(
   `;
   const inputSkinMap = new Map(inputSkinRows.map((row) => [row.id, row]));
 
+  const inputHashNames = [...new Set(inputs.map((input) => input.market_hash_name))];
+  const inputVariantRows = await sql<{ market_hash_name: string; is_souvenir: boolean }[]>`
+    SELECT market_hash_name, is_souvenir
+    FROM skin_variants
+    WHERE market_hash_name IN ${sql(inputHashNames)}
+  `;
+  const inputVariantMap = new Map(inputVariantRows.map((row) => [row.market_hash_name, row]));
+
   const resolvedInputs: ResolvedTradeupInput[] = [];
   for (let index = 0; index < inputs.length; index++) {
     const input = inputs[index];
@@ -339,6 +353,11 @@ export async function evaluateTradeupContract(
       return { error: `Invalid input rarity for ${skin.name}` };
     }
 
+    const isSouvenirInput = inputVariantMap.get(input.market_hash_name)?.is_souvenir ?? false;
+    if (isSouvenirInput && !souvenirInputsAllowed(isStatTrak)) {
+      return { error: `Souvenir items cannot be used in a StatTrak contract (${skin.name})` };
+    }
+
     const clampedFloat = Math.min(Math.max(input.input_float, skin.min_float), skin.max_float);
     resolvedInputs.push({
       slot: index + 1,
@@ -348,6 +367,7 @@ export async function evaluateTradeupContract(
       wear_name: input.wear_name,
       price_cents: input.price_cents,
       is_last_sold_price: false,
+      is_souvenir: isSouvenirInput,
       collection_id: input.collection_id,
       collection_name: input.collection_id,
       market_hash_name: input.market_hash_name,
@@ -396,10 +416,15 @@ function generateWearVariants(
   const combo1 = buildComboFromSlots(cheapestConfig, targetSkinId, targetWear, outputSkins, numInputs);
   if (combo1) combos.push(combo1);
 
-  // Config 2: All same wear (try each wear condition)
+  // Config 2: All same wear (try each wear condition), using the cheapest variant
+  // (normal or souvenir) available at that wear for each slot
   for (const wearName of WEAR_ORDER) {
     const config = inputSlots.map((slot) => {
-      const idx = slot.wear_options.findIndex((w) => w.wear_name === wearName);
+      let idx = -1;
+      slot.wear_options.forEach((w, i) => {
+        if (w.wear_name !== wearName) return;
+        if (idx === -1 || w.price_cents < slot.wear_options[idx].price_cents) idx = i;
+      });
       return idx >= 0 ? { candidate: slot, wearIdx: idx } : null;
     });
     if (config.some((s) => s === null)) continue;
@@ -525,6 +550,7 @@ function buildComboFromSlots(
       wear_name: wear.wear_name,
       price_cents: wear.price_cents,
       is_last_sold_price: wear.is_last_sold_price,
+      is_souvenir: wear.is_souvenir,
       collection_id: slot.candidate.collection_id,
       collection_name: slot.candidate.collection_name,
       market_hash_name: wear.market_hash_name,
@@ -702,6 +728,7 @@ function evaluateResolvedTradeup(
         wear_name: input.wear_name,
         price_cents: input.price_cents,
         is_last_sold_price: input.is_last_sold_price,
+        is_souvenir: input.is_souvenir,
         collection_id: input.collection_id,
         collection_name: input.collection_name,
         market_hash_name: input.market_hash_name,
@@ -867,23 +894,29 @@ interface VariantPriceRow {
   skin_id: string;
   wear_name: string;
   market_hash_name: string;
+  is_souvenir: boolean;
   lowest_price_cents: number | null;
   last_sold_avg_cents: number | null;
 }
 
+// `includeSouvenir` is only meaningful for input pricing: souvenir variants are legal inputs
+// in non-StatTrak contracts but a contract can never produce one, so output pricing must
+// always load with includeSouvenir = false.
 async function batchLoadVariantPrices(
   skinIds: string[],
-  stattrakFilter: boolean
+  stattrakFilter: boolean,
+  includeSouvenir: boolean
 ): Promise<Map<string, VariantPriceRow[]>> {
   if (skinIds.length === 0) return new Map();
 
   const rows = await sql<VariantPriceRow[]>`
-    SELECT sv.skin_id, sv.wear_name, sv.market_hash_name,
+    SELECT sv.skin_id, sv.wear_name, sv.market_hash_name, sv.is_souvenir,
            p.lowest_price_cents, l.avg_last5_cents AS last_sold_avg_cents
     FROM skin_variants sv
     LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
     LEFT JOIN last_sold_avg l ON sv.market_hash_name = l.market_hash_name
-    WHERE sv.skin_id IN ${sql(skinIds)} AND sv.is_stattrak = ${stattrakFilter} AND sv.is_souvenir = FALSE
+    WHERE sv.skin_id IN ${sql(skinIds)} AND sv.is_stattrak = ${stattrakFilter}
+      AND (sv.is_souvenir = FALSE OR ${includeSouvenir})
       AND ((p.lowest_price_cents IS NOT NULL AND p.lowest_price_cents > 0)
         OR (l.avg_last5_cents IS NOT NULL AND l.avg_last5_cents > 0))
   `;
@@ -903,6 +936,7 @@ async function batchLoadVariantPrices(
 function buildLastSoldByWear(rows: VariantPriceRow[]): Record<string, number> {
   const lastSold: Record<string, number> = {};
   for (const row of rows) {
+    if (row.is_souvenir) continue;
     if (row.last_sold_avg_cents != null && row.last_sold_avg_cents > 0) {
       lastSold[row.wear_name] = row.last_sold_avg_cents;
     }
@@ -920,7 +954,7 @@ async function buildCandidatesWithWears(
 
   // Batch-load all variant prices for every candidate skin in one query
   const uniqueSkinIds = [...new Set(rawInputs.map((r) => r.skin_id))];
-  const variantMap = await batchLoadVariantPrices(uniqueSkinIds, stattrakFilter);
+  const variantMap = await batchLoadVariantPrices(uniqueSkinIds, stattrakFilter, souvenirInputsAllowed(stattrakFilter));
 
   for (const row of rawInputs) {
     const key = `${row.skin_id}:${row.collection_id}`;
@@ -945,6 +979,7 @@ async function buildCandidatesWithWears(
         assumed_float: estFloat,
         t_float: tFloat,
         is_last_sold_price: false,
+        is_souvenir: w.is_souvenir,
       };
     });
 
@@ -992,7 +1027,7 @@ async function gatherOutputSkins(
   `;
 
   const skinIds = rows.map((r) => r.skin_id);
-  const variantMap = await batchLoadVariantPrices(skinIds, stattrakFilter);
+  const variantMap = await batchLoadVariantPrices(skinIds, stattrakFilter, false);
 
   const results: OutputSkin[] = [];
   for (const row of rows) {
@@ -1027,7 +1062,7 @@ async function gatherOutputSkinsFromCrates(
     : rows;
 
   const skinIds = filteredRows.map((r) => r.skin_id);
-  const variantMap = await batchLoadVariantPrices(skinIds, stattrakFilter);
+  const variantMap = await batchLoadVariantPrices(skinIds, stattrakFilter, false);
 
   const results: OutputSkin[] = [];
   for (const row of filteredRows) {

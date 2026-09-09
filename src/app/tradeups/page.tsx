@@ -64,7 +64,8 @@ export default async function TradeupsPage({
               <p className="max-w-3xl text-sm leading-6 text-zinc-400">
                 Ranked by expected value using cached Steam Community Market prices. This leaderboard evaluates
                 identical-input contracts: 10x of the same skin for standard tradeups, or 5x for knife and glove
-                tradeups. Output estimates use the selected input wear.
+                tradeups. Souvenir inputs are included (their souvenir attributes are stripped and the output is
+                always a normal item). Output estimates use the selected input wear.
               </p>
             </div>
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-4 py-3 text-sm text-zinc-400">
@@ -140,6 +141,11 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                 </Link>
                 <div className="text-sm text-zinc-400">
                   {entry.input.weapon_name} / {entry.input.wear_name}
+                  {entry.input.is_souvenir && (
+                    <span className="ml-2 rounded bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-yellow-300">
+                      souvenir
+                    </span>
+                  )}
                 </div>
                 <div className="text-sm text-zinc-400">
                   {entry.outcome_count} possible outcomes
@@ -225,7 +231,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
               </div>
               <div className="mt-2 flex items-center justify-between gap-3">
                 <span>Wear</span>
-                <span className="text-zinc-300">{entry.input.wear_name}</span>
+                <span className="text-zinc-300">{entry.input.is_souvenir ? 'Souvenir ' : ''}{entry.input.wear_name}</span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3">
                 <span>Estimated avg float</span>

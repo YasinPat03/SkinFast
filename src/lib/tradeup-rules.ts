@@ -16,6 +16,16 @@ export function hasTradeupExcludedCollection(collectionIds: Iterable<string>): b
   return false;
 }
 
+// ── Souvenir inputs ─────────────────────────────────────────────────
+// Since the May 22, 2026 update, Souvenir items are valid trade-up inputs alongside normal
+// items. Souvenir attributes are stripped and the result is always a normal item, so souvenir
+// variants only ever appear on the input side. StatTrak contracts are still all-or-nothing and
+// souvenir items are never StatTrak, so they cannot enter a StatTrak contract.
+
+export function souvenirInputsAllowed(isStatTrak: boolean): boolean {
+  return !isStatTrak;
+}
+
 // ── Knife / glove detection ─────────────────────────────────────────
 // Rare special items are identified by weapon name because `skins.weapon_name` is
 // available everywhere; `crate_skins.is_rare` is the authoritative flag when a crate
