@@ -4,6 +4,8 @@ import {
   TRADEUP_EXCLUDED_COLLECTION_IDS,
   TRADEUP_EXCLUDED_COLLECTION_REASON,
   hasTradeupExcludedCollection,
+  goldOutcomeKey,
+  groupRows,
   isKnifeOrGloveWeapon,
   isKnifeWeapon,
   isTradeupExcludedCollectionId,
@@ -67,6 +69,12 @@ interface OutputSkin {
   max_float: number;
   // wear_name -> last_sold_avg.avg_last5_cents (volume-weighted last 5 sales)
   last_sold_by_wear: Record<string, number>;
+  // All skin ids folded into this outcome (Doppler phases share one loot entry).
+  alias_skin_ids: string[];
+}
+
+function findOutputForSkin(outputSkins: OutputSkin[], skinId: string): OutputSkin | undefined {
+  return outputSkins.find((output) => output.skin_id === skinId || output.alias_skin_ids.includes(skinId));
 }
 
 type FloatSource = 'wear_assumption' | 'exact';
@@ -177,13 +185,18 @@ export async function findBestTradeup(
   if (!targetSkin) return { error: 'Target skin not found' };
 
   const stattrakFilter = isStatTrak;
-  // The contract output is always a normal (or StatTrak) item, never a souvenir.
+  // The contract output is always a normal (or StatTrak) item, never a souvenir. Doppler
+  // phases share a single market listing, so match by name rather than by the exact skin id.
   const targetPriceRows = await sql<{ lowest_price_cents: number }[]>`
     SELECT p.lowest_price_cents
     FROM skin_variants sv
+    JOIN skins s ON s.id = sv.skin_id
     JOIN prices p ON sv.market_hash_name = p.market_hash_name
-    WHERE sv.skin_id = ${targetSkinId} AND sv.wear_name = ${targetWear}
+    WHERE s.name = ${targetSkin.name} AND s.weapon_name = ${targetSkin.weapon_name}
+      AND sv.wear_name = ${targetWear}
       AND sv.is_stattrak = ${stattrakFilter} AND sv.is_souvenir = FALSE
+    ORDER BY p.lowest_price_cents ASC
+    LIMIT 1
   `;
   const targetPrice = targetPriceRows[0];
 
@@ -433,7 +446,7 @@ function generateWearVariants(
   }
 
   // Config 3: Greedy optimization targeting the user's selected wear
-  const targetOutput = outputSkins.find((o) => o.skin_id === targetSkinId);
+  const targetOutput = findOutputForSkin(outputSkins, targetSkinId);
   if (!targetOutput || targetOutput.max_float <= targetOutput.min_float) return;
 
   const wearRange = WEAR_FLOAT_RANGES[targetWear];
@@ -565,7 +578,7 @@ function buildComboFromSlots(
 
   // If estimated midpoint floats don't land in the target wear, adjust input floats
   // to the highest values that still produce the target wear (cheapest possible inputs)
-  const targetOutput = outputSkins.find((o) => o.skin_id === targetSkinId);
+  const targetOutput = findOutputForSkin(outputSkins, targetSkinId);
   if (targetOutput && targetOutput.max_float > targetOutput.min_float) {
     const currentAvgT = resolvedInputs.reduce((sum, i) => sum + i.normalized_float, 0) / numInputs;
     const currentOutputFloat = calculateOutputFloat(currentAvgT, targetOutput.min_float, targetOutput.max_float);
@@ -655,10 +668,12 @@ function evaluateResolvedTradeup(
     }
   }
 
-  const targetSkinProb = outcomeProbs.get(targetSkinId) ?? 0;
+  const targetOutput = findOutputForSkin(outputSkins, targetSkinId) ?? null;
+  const resolvedTargetId = targetOutput?.skin_id ?? targetSkinId;
+
+  const targetSkinProb = outcomeProbs.get(resolvedTargetId) ?? 0;
   if (targetSkinProb === 0) return null;
 
-  const targetOutput = outputSkins.find((o) => o.skin_id === targetSkinId) ?? null;
   const targetOutputFloat = targetOutput
     ? calculateOutputFloat(avgNormalizedFloat, targetOutput.min_float, targetOutput.max_float)
     : null;
@@ -705,7 +720,7 @@ function evaluateResolvedTradeup(
       probability: Math.round(prob * 10000) / 10000,
       price_cents: priceAtWear,
       image_url: output.image_url,
-      is_target: skinId === targetSkinId,
+      is_target: skinId === resolvedTargetId,
       is_last_sold_price: isLastSold,
       expected_float: Math.round(outputFloat * 100000) / 100000,
       expected_wear: outputWear,
@@ -1035,10 +1050,13 @@ async function gatherOutputSkins(
     results.push({
       ...row,
       last_sold_by_wear,
+      alias_skin_ids: [row.skin_id],
     });
   }
   return results;
 }
+
+type RawOutputRow = Omit<OutputSkin, 'last_sold_by_wear' | 'alias_skin_ids'>;
 
 async function gatherOutputSkinsFromCrates(
   crateIds: Set<string>,
@@ -1046,7 +1064,7 @@ async function gatherOutputSkinsFromCrates(
 ): Promise<OutputSkin[]> {
   const ids = [...crateIds];
 
-  const rows = await sql<(OutputSkin & { skin_id: string })[]>`
+  const rows = await sql<RawOutputRow[]>`
     SELECT DISTINCT s.id as skin_id, s.name as skin_name, s.weapon_name, s.image_url,
            s.min_float, s.max_float,
            cs.crate_id as collection_id, cr.name as collection_name
@@ -1064,16 +1082,18 @@ async function gatherOutputSkinsFromCrates(
   const skinIds = filteredRows.map((r) => r.skin_id);
   const variantMap = await batchLoadVariantPrices(skinIds, stattrakFilter, false);
 
+  // Doppler-style phases collapse into one loot entry. Phases share a market listing, so
+  // only one phase row carries variants; use it as the representative and merge the rest.
+  const groups = groupRows(filteredRows, (row) => goldOutcomeKey(row.collection_id, row.skin_name));
+
   const results: OutputSkin[] = [];
-  for (const row of filteredRows) {
-    const last_sold_by_wear = buildLastSoldByWear(variantMap.get(row.skin_id) ?? []);
-    // Preserve StatTrak filtering: skip skins with no last-sold data at all
-    if (stattrakFilter && Object.keys(last_sold_by_wear).length === 0) {
-      continue;
-    }
+  for (const group of groups) {
+    const variantRows = group.flatMap((row) => variantMap.get(row.skin_id) ?? []);
+    const representative = group.find((row) => (variantMap.get(row.skin_id) ?? []).length > 0) ?? group[0];
     results.push({
-      ...row,
-      last_sold_by_wear,
+      ...representative,
+      last_sold_by_wear: buildLastSoldByWear(variantRows),
+      alias_skin_ids: group.map((row) => row.skin_id),
     });
   }
   return results;

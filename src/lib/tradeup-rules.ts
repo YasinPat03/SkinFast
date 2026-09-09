@@ -26,6 +26,31 @@ export function souvenirInputsAllowed(isStatTrak: boolean): boolean {
   return !isStatTrak;
 }
 
+// ── Gold outcome pools ──────────────────────────────────────────────
+// Doppler / Gamma Doppler phases are separate paint kits (and separate skin ids in the item
+// metadata) but a single entry in a case's rare special item pool: the contract rolls
+// "knife + finish" and the phase is a sub-roll. Phase rows therefore have to be merged into
+// one outcome when computing gold-tradeup probabilities, otherwise a 7-phase Doppler would
+// be weighted 7x against every other finish.
+
+export function goldOutcomeKey(crateId: string, skinName: string): string {
+  return `${crateId}|${skinName}`;
+}
+
+export function groupRows<T>(rows: T[], key: (row: T) => string): T[][] {
+  const groups = new Map<string, T[]>();
+  for (const row of rows) {
+    const groupKey = key(row);
+    const group = groups.get(groupKey);
+    if (group) {
+      group.push(row);
+    } else {
+      groups.set(groupKey, [row]);
+    }
+  }
+  return [...groups.values()];
+}
+
 // ── Knife / glove detection ─────────────────────────────────────────
 // Rare special items are identified by weapon name because `skins.weapon_name` is
 // available everywhere; `crate_skins.is_rare` is the authoritative flag when a crate

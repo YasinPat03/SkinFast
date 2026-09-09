@@ -1,7 +1,7 @@
 import { unstable_cache } from 'next/cache';
 import sql from './db';
 import { TRADEUP_INPUT_RARITY } from './types';
-import { TRADEUP_EXCLUDED_COLLECTION_IDS } from './tradeup-rules';
+import { TRADEUP_EXCLUDED_COLLECTION_IDS, goldOutcomeKey, groupRows } from './tradeup-rules';
 import {
   calculateOutputFloat,
   calculateTFloat,
@@ -396,7 +396,11 @@ function buildGoldContracts(
 
   for (const [crateId, crateRows] of rowsByCrate) {
     const inputs = crateRows.filter((row) => row.rarity_id === 'rarity_ancient_weapon' && !row.is_rare);
-    const outputs = crateRows.filter((row) => row.is_rare);
+    // Doppler-style phases are one loot entry; keep the phase row that carries market data.
+    const outputs = groupRows(
+      crateRows.filter((row) => row.is_rare),
+      (row) => goldOutcomeKey(crateId, row.skin_name)
+    ).map((group) => group.find((row) => priceLookupBySkinId.has(row.skin_id)) ?? group[0]);
 
     if (inputs.length === 0 || outputs.length === 0) continue;
 

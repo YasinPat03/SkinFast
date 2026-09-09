@@ -461,15 +461,19 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                     <div className="mt-3">
                       <span className="text-xs uppercase tracking-wider text-zinc-400">Possible outputs ({skin.rarity_name})</span>
                       <div className="mt-1.5 space-y-1">
-                        {col.output_skins.map((s) => (
-                          <div key={s.id} className="flex items-center gap-2 text-sm">
-                            {s.image_url && <img src={s.image_url} alt={s.name} className="w-10 h-7 object-contain" />}
-                            <span className={s.id === skinId ? 'text-green-400 font-medium' : 'text-zinc-300'}>
-                              {s.name}
-                              {s.id === skinId && ' (target)'}
-                            </span>
-                          </div>
-                        ))}
+                        {col.output_skins.map((s) => {
+                          const isTarget = s.id === skinId || s.alias_ids.includes(skinId);
+                          return (
+                            <div key={s.id} className="flex items-center gap-2 text-sm">
+                              {s.image_url && <img src={s.image_url} alt={s.name} className="w-10 h-7 object-contain" />}
+                              <span className={isTarget ? 'text-green-400 font-medium' : 'text-zinc-300'}>
+                                {s.name}
+                                {s.alias_ids.length > 1 && ' (any phase)'}
+                                {isTarget && ' (target)'}
+                              </span>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>

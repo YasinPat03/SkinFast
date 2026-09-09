@@ -3,6 +3,8 @@ import { TRADEUP_INPUT_RARITY } from './types';
 import {
   TRADEUP_EXCLUDED_COLLECTION_IDS,
   TRADEUP_EXCLUDED_COLLECTION_REASON,
+  goldOutcomeKey,
+  groupRows,
   hasTradeupExcludedCollection,
   isKnifeOrGloveWeapon,
   isKnifeWeapon,
@@ -53,7 +55,12 @@ export interface TradeupEligibility {
       is_last_sold_price: boolean;
       cheapest_is_souvenir: boolean;
     })[];
-    output_skins: (SkinRow & { cheapest_price_cents: number | null; is_last_sold_price: boolean })[];
+    output_skins: (SkinRow & {
+      cheapest_price_cents: number | null;
+      is_last_sold_price: boolean;
+      // Skin ids merged into this outcome (Doppler phases share one loot entry).
+      alias_ids: string[];
+    })[];
   }[];
 }
 
@@ -160,7 +167,12 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
       .filter((s) => s.collection_id === col.id)
       .map((s) => {
         const priceInfo = cheapestPrices.get(s.id);
-        return { ...s, cheapest_price_cents: priceInfo?.lastSold ?? null, is_last_sold_price: priceInfo?.lastSold != null };
+        return {
+          ...s,
+          cheapest_price_cents: priceInfo?.lastSold ?? null,
+          is_last_sold_price: priceInfo?.lastSold != null,
+          alias_ids: [s.id],
+        };
       });
 
     return {
@@ -213,7 +225,7 @@ async function getGoldTradeupEligibility(skinId: string): Promise<TradeupEligibi
   `;
 
   // Output skins: all knives/gloves (is_rare = true) from the same crates
-  const outputSkins = await sql<OutputSkinRow[]>`
+  const outputSkinRows = await sql<OutputSkinRow[]>`
     SELECT DISTINCT s.*, cs.crate_id as collection_id
     FROM skins s
     JOIN crate_skins cs ON s.id = cs.skin_id
@@ -222,8 +234,21 @@ async function getGoldTradeupEligibility(skinId: string): Promise<TradeupEligibi
   `;
 
   // Get cheapest prices
-  const allSkinIds = [...new Set([...inputSkins.map((s) => s.id), ...outputSkins.map((s) => s.id)])];
+  const allSkinIds = [...new Set([...inputSkins.map((s) => s.id), ...outputSkinRows.map((s) => s.id)])];
   const cheapestPrices = await getCheapestPrices(allSkinIds);
+
+  // Doppler-style phases are one loot entry: collapse them, keeping the phase row that
+  // actually carries market data (all phases share one listing) as the representative.
+  const outputSkins = groupRows(outputSkinRows, (row) => goldOutcomeKey(row.collection_id, row.name))
+    .map((group) => {
+      const priced = group.filter((row) => cheapestPrices.get(row.id)?.lastSold != null);
+      const representative = priced[0] ?? group[0];
+      const lastSold = priced.reduce<number | null>((min, row) => {
+        const value = cheapestPrices.get(row.id)!.lastSold!;
+        return min == null || value < min ? value : min;
+      }, null);
+      return { ...representative, collapsed_last_sold: lastSold, alias_ids: group.map((row) => row.id) };
+    });
 
   // Group by crate. Same split as standard: inputs from listings, outputs from last-5 avg.
   const collectionData = crates.map((crate) => {
@@ -241,10 +266,11 @@ async function getGoldTradeupEligibility(skinId: string): Promise<TradeupEligibi
 
     const crateOutputs = outputSkins
       .filter((s) => s.collection_id === crate.id)
-      .map((s) => {
-        const priceInfo = cheapestPrices.get(s.id);
-        return { ...s, cheapest_price_cents: priceInfo?.lastSold ?? null, is_last_sold_price: priceInfo?.lastSold != null };
-      });
+      .map(({ collapsed_last_sold, ...s }) => ({
+        ...s,
+        cheapest_price_cents: collapsed_last_sold,
+        is_last_sold_price: collapsed_last_sold != null,
+      }));
 
     return {
       id: crate.id,
@@ -353,12 +379,14 @@ export async function calculateTradeupProbability(
   // For each collection/crate that has inputs, find all possible output skins
   const outcomes: { skinId: string; skinName: string; collectionId: string; probability: number }[] = [];
   const skinProbabilities = new Map<string, number>();
+  // Doppler phases collapse into a single outcome; remember which id represents the target.
+  let resolvedTargetId = targetSkinId;
 
   for (const [collectionId, inputCount] of inputsPerCollection) {
     let outputSkins: { id: string; name: string; weapon_name: string }[];
 
     if (isGoldTradeup) {
-      outputSkins = await sql<{ id: string; name: string; weapon_name: string }[]>`
+      const rareRows = await sql<{ id: string; name: string; weapon_name: string }[]>`
         SELECT s.id, s.name, s.weapon_name
         FROM skins s
         JOIN crate_skins cs ON s.id = cs.skin_id
@@ -366,9 +394,16 @@ export async function calculateTradeupProbability(
         AND cs.is_rare = TRUE
       `;
 
-      if (isStatTrakTradeup) {
-        outputSkins = outputSkins.filter((skin) => isKnifeWeapon(skin.weapon_name));
-      }
+      const eligibleRows = isStatTrakTradeup
+        ? rareRows.filter((skin) => isKnifeWeapon(skin.weapon_name))
+        : rareRows;
+
+      outputSkins = groupRows(eligibleRows, (row) => goldOutcomeKey(collectionId, row.name)).map((group) => {
+        if (group.some((row) => row.id === targetSkinId)) {
+          resolvedTargetId = group[0].id;
+        }
+        return group[0];
+      });
     } else {
       if (isTradeupExcludedCollectionId(collectionId)) {
         continue;
@@ -415,7 +450,7 @@ export async function calculateTradeupProbability(
     }
   }
 
-  const targetProbability = skinProbabilities.get(targetSkinId) ?? 0;
+  const targetProbability = skinProbabilities.get(resolvedTargetId) ?? 0;
 
   return {
     probability: targetProbability,
