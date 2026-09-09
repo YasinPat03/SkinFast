@@ -4,6 +4,8 @@ import {
   TRADEUP_EXCLUDED_COLLECTION_IDS,
   TRADEUP_EXCLUDED_COLLECTION_REASON,
   hasTradeupExcludedCollection,
+  isKnifeOrGloveWeapon,
+  isKnifeWeapon,
   isTradeupExcludedCollectionId,
 } from './tradeup-rules';
 import {
@@ -14,31 +16,6 @@ import {
   WEAR_FLOAT_RANGES,
   WEAR_ORDER,
 } from './tradeup-floats';
-
-// ── Knife/Glove Detection ─────────────────────────────────────────
-
-function isKnifeOrGloveSkin(weaponName: string): boolean {
-  const lower = weaponName.toLowerCase();
-  return lower.includes('knife') || lower.includes('bayonet') || lower.includes('karambit')
-    || lower.includes('gloves') || lower.includes('wraps') || lower.includes('daggers') || lower.includes('navaja')
-    || lower.includes('stiletto') || lower.includes('talon') || lower.includes('ursus')
-    || lower.includes('nomad') || lower.includes('skeleton') || lower.includes('paracord')
-    || lower.includes('survival') || lower.includes('classic') || lower.includes('kukri')
-    || lower.includes('falchion') || lower.includes('bowie') || lower.includes('huntsman')
-    || lower.includes('butterfly') || lower.includes('flip') || lower.includes('gut')
-    || lower.includes('m9') || lower.includes('shadow');
-}
-
-function isGloveSkin(weaponName: string): boolean {
-  const lower = weaponName.toLowerCase();
-  return lower.includes('gloves') || lower.includes('wraps');
-}
-
-function isKnifeSkin(weaponName: string): boolean {
-  return isKnifeOrGloveSkin(weaponName) && !isGloveSkin(weaponName);
-}
-
-// ── Float Utilities ───────────────────────────────────────────────
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -204,7 +181,7 @@ export async function findBestTradeup(
   `;
   const targetPrice = targetPriceRows[0];
 
-  const isGold = isKnifeOrGloveSkin(targetSkin.weapon_name);
+  const isGold = isKnifeOrGloveWeapon(targetSkin.weapon_name);
   const numInputs = isGold ? 5 : 10;
   const inputRarityId = isGold ? 'rarity_ancient_weapon' : TRADEUP_INPUT_RARITY[targetSkin.rarity_id];
   if (!inputRarityId) return { error: 'No valid input rarity for this skin' };
@@ -329,13 +306,13 @@ export async function evaluateTradeupContract(
   const targetSkin = targetSkinRows[0];
   if (!targetSkin) return { error: 'Target skin not found' };
 
-  const isGold = isKnifeOrGloveSkin(targetSkin.weapon_name);
+  const isGold = isKnifeOrGloveWeapon(targetSkin.weapon_name);
   const numInputs = isGold ? 5 : 10;
   if (inputs.length !== numInputs) {
     return { error: `Expected ${numInputs} inputs for this contract` };
   }
 
-  if (isGold && isStatTrak && !isKnifeSkin(targetSkin.weapon_name)) {
+  if (isGold && isStatTrak && !isKnifeWeapon(targetSkin.weapon_name)) {
     return { error: 'StatTrak Covert tradeups can only produce knives' };
   }
 
@@ -1046,7 +1023,7 @@ async function gatherOutputSkinsFromCrates(
   `;
 
   const filteredRows = stattrakFilter
-    ? rows.filter((row) => isKnifeSkin(row.weapon_name))
+    ? rows.filter((row) => isKnifeWeapon(row.weapon_name))
     : rows;
 
   const skinIds = filteredRows.map((r) => r.skin_id);

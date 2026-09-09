@@ -4,6 +4,8 @@ import {
   TRADEUP_EXCLUDED_COLLECTION_IDS,
   TRADEUP_EXCLUDED_COLLECTION_REASON,
   hasTradeupExcludedCollection,
+  isKnifeOrGloveWeapon,
+  isKnifeWeapon,
   isTradeupExcludedCollectionId,
 } from './tradeup-rules';
 
@@ -61,28 +63,6 @@ const RARITY_NAMES: Record<string, string> = {
   rarity_ancient_weapon: 'Covert',
 };
 
-// Check if a skin is a knife or glove based on weapon_name
-function isKnifeOrGlove(weaponName: string): boolean {
-  const lower = weaponName.toLowerCase();
-  return lower.includes('knife') || lower.includes('bayonet') || lower.includes('karambit')
-    || lower.includes('gloves') || lower.includes('wraps') || lower.includes('daggers') || lower.includes('navaja')
-    || lower.includes('stiletto') || lower.includes('talon') || lower.includes('ursus')
-    || lower.includes('nomad') || lower.includes('skeleton') || lower.includes('paracord')
-    || lower.includes('survival') || lower.includes('classic') || lower.includes('kukri')
-    || lower.includes('falchion') || lower.includes('bowie') || lower.includes('huntsman')
-    || lower.includes('butterfly') || lower.includes('flip') || lower.includes('gut')
-    || lower.includes('m9') || lower.includes('shadow');
-}
-
-function isGlove(weaponName: string): boolean {
-  const lower = weaponName.toLowerCase();
-  return lower.includes('gloves') || lower.includes('wraps');
-}
-
-function isKnife(weaponName: string): boolean {
-  return isKnifeOrGlove(weaponName) && !isGlove(weaponName);
-}
-
 export async function getTradeupEligibility(skinId: string): Promise<TradeupEligibility> {
   const skinRows = await sql<SkinRow[]>`SELECT * FROM skins WHERE id = ${skinId}`;
   const skin = skinRows[0];
@@ -96,7 +76,7 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
   }
 
   // Check if this is a knife/glove — these use gold tradeups via crates
-  const skinIsKnifeOrGlove = isKnifeOrGlove(skin.weapon_name);
+  const skinIsKnifeOrGlove = isKnifeOrGloveWeapon(skin.weapon_name);
 
   if (skinIsKnifeOrGlove) {
     return getGoldTradeupEligibility(skinId);
@@ -355,7 +335,7 @@ export async function calculateTradeupProbability(
       `;
 
       if (isStatTrakTradeup) {
-        outputSkins = outputSkins.filter((skin) => isKnife(skin.weapon_name));
+        outputSkins = outputSkins.filter((skin) => isKnifeWeapon(skin.weapon_name));
       }
     } else {
       if (isTradeupExcludedCollectionId(collectionId)) {

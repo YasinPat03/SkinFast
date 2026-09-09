@@ -79,16 +79,6 @@ export interface TradeupResult {
   ev_cents: number;
 }
 
-// Rarity tier mapping
-export const RARITY_TIERS: Record<string, number> = {
-  rarity_common_weapon: 1,    // Consumer Grade
-  rarity_uncommon_weapon: 2,  // Industrial Grade
-  rarity_rare_weapon: 3,      // Mil-Spec Grade
-  rarity_mythical_weapon: 4,  // Restricted
-  rarity_legendary_weapon: 5, // Classified
-  rarity_ancient_weapon: 6,   // Covert
-};
-
 // Input rarity → Output rarity mapping
 export const TRADEUP_INPUT_RARITY: Record<string, string> = {
   rarity_uncommon_weapon: 'rarity_common_weapon',    // Industrial ← Consumer
@@ -97,12 +87,3 @@ export const TRADEUP_INPUT_RARITY: Record<string, string> = {
   rarity_legendary_weapon: 'rarity_mythical_weapon', // Classified ← Restricted
   rarity_ancient_weapon: 'rarity_legendary_weapon',  // Covert ← Classified
 };
-
-// Wear condition boundaries
-export const WEAR_BOUNDARIES = {
-  'Factory New': { min: 0.00, max: 0.07 },
-  'Minimal Wear': { min: 0.07, max: 0.15 },
-  'Field-Tested': { min: 0.15, max: 0.38 },
-  'Well-Worn': { min: 0.38, max: 0.45 },
-  'Battle-Scarred': { min: 0.45, max: 1.00 },
-} as const;
