@@ -1004,7 +1004,7 @@ async function batchLoadVariantPrices(
     LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
     LEFT JOIN last_sold_avg l ON sv.market_hash_name = l.market_hash_name
     WHERE sv.skin_id IN ${sql(skinIds)} AND sv.is_stattrak = ${stattrakFilter}
-      AND (sv.is_souvenir = FALSE OR ${includeSouvenir})
+      AND (sv.is_souvenir = FALSE OR ${includeSouvenir}::boolean)
       AND ((p.lowest_price_cents IS NOT NULL AND p.lowest_price_cents > 0)
         OR (l.avg_last5_cents IS NOT NULL AND l.avg_last5_cents > 0))
   `;
