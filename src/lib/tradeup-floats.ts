@@ -26,27 +26,6 @@ export function estimateFloat(wearName: string, skinMinFloat: number, skinMaxFlo
   return (clampedMin + clampedMax) / 2;
 }
 
-export function estimateFloatForWearAlignment(
-  wearName: string,
-  skinMinFloat: number,
-  skinMaxFloat: number
-): number {
-  const range = WEAR_FLOAT_RANGES[wearName];
-  if (!range) return clampFloatToRange((skinMinFloat + skinMaxFloat) / 2, skinMinFloat, skinMaxFloat);
-
-  const clampedMin = Math.max(range[0], skinMinFloat);
-  const clampedMax = Math.min(range[1], skinMaxFloat);
-  if (clampedMin <= clampedMax) {
-    return (clampedMin + clampedMax) / 2;
-  }
-
-  if (skinMaxFloat < range[0]) {
-    return skinMaxFloat;
-  }
-
-  return skinMinFloat;
-}
-
 export function calculateTFloat(actualFloat: number, minFloat: number, maxFloat: number): number {
   if (maxFloat <= minFloat) return 0;
   return (actualFloat - minFloat) / (maxFloat - minFloat);
@@ -62,10 +41,6 @@ export function floatToWear(value: number): string {
   if (value < 0.38) return 'Field-Tested';
   if (value < 0.45) return 'Well-Worn';
   return 'Battle-Scarred';
-}
-
-export function getWearOrderIndex(wearName: string): number {
-  return WEAR_ORDER.indexOf(wearName);
 }
 
 function clampFloatToRange(value: number, minFloat: number, maxFloat: number): number {

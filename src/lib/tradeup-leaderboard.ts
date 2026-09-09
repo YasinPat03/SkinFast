@@ -6,9 +6,7 @@ import {
   calculateOutputFloat,
   calculateTFloat,
   estimateFloat,
-  estimateFloatForWearAlignment,
   floatToWear,
-  getWearOrderIndex,
 } from './tradeup-floats';
 
 interface MembershipRow {
@@ -288,30 +286,6 @@ function resolveOutputPrice(
   return { price_cents: null, is_last_sold_price: false };
 }
 
-function alignOutcomeEstimate(
-  inputWearName: string,
-  outputFloat: number,
-  outputMinFloat: number,
-  outputMaxFloat: number
-): { expected_float: number; expected_wear: string } {
-  const estimatedWear = floatToWear(outputFloat);
-  const estimatedWearIndex = getWearOrderIndex(estimatedWear);
-  const inputWearIndex = getWearOrderIndex(inputWearName);
-
-  if (estimatedWearIndex === -1 || inputWearIndex === -1 || estimatedWearIndex >= inputWearIndex) {
-    return {
-      expected_float: outputFloat,
-      expected_wear: estimatedWear,
-    };
-  }
-
-  const alignedFloat = estimateFloatForWearAlignment(inputWearName, outputMinFloat, outputMaxFloat);
-  return {
-    expected_float: alignedFloat,
-    expected_wear: floatToWear(alignedFloat),
-  };
-}
-
 function buildStandardContracts(
   rows: MembershipRow[],
   wearOptionsBySkinId: Map<string, PriceOption[]>,
@@ -453,26 +427,19 @@ function buildContractEntry({
 
   const probability = 1 / outputs.length;
   const totalCost = wearOption.price_cents * numInputs;
-  const inputWearIndex = getWearOrderIndex(wearOption.wear_name);
   let expectedReturn = 0;
   let hasLastSoldPrices = wearOption.is_last_sold_price;
   let bestOutcomePrice: number | null = null;
   const outcomes: TradeupLeaderboardOutcome[] = [];
 
   for (const output of outputs) {
-    const outputFloat = calculateOutputFloat(wearOption.t_float, output.min_float, output.max_float);
-    const alignedOutcome = alignOutcomeEstimate(
-      wearOption.wear_name,
-      outputFloat,
-      output.min_float,
-      output.max_float
-    );
-    const alignedWearIndex = getWearOrderIndex(alignedOutcome.expected_wear);
-    if (inputWearIndex !== -1 && alignedWearIndex !== -1 && alignedWearIndex < inputWearIndex) {
-      return null;
-    }
+    // Output float follows the normalized formula directly. Since the Oct 2025 change an
+    // input with a high min_float normalizes low and can legitimately yield a better wear
+    // than the input itself, so the output wear is not clamped to the input wear.
+    const expectedFloat = calculateOutputFloat(wearOption.t_float, output.min_float, output.max_float);
+    const expectedWear = floatToWear(expectedFloat);
 
-    const resolvedPrice = resolveOutputPrice(priceLookupBySkinId.get(output.skin_id), alignedOutcome.expected_wear);
+    const resolvedPrice = resolveOutputPrice(priceLookupBySkinId.get(output.skin_id), expectedWear);
 
     if (resolvedPrice.price_cents != null) {
       expectedReturn += resolvedPrice.price_cents * probability;
@@ -491,8 +458,8 @@ function buildContractEntry({
       weapon_name: output.weapon_name,
       image_url: output.image_url,
       probability: Math.round(probability * 10000) / 10000,
-      expected_float: Math.round(alignedOutcome.expected_float * 100000) / 100000,
-      expected_wear: alignedOutcome.expected_wear,
+      expected_float: Math.round(expectedFloat * 100000) / 100000,
+      expected_wear: expectedWear,
       price_cents: resolvedPrice.price_cents,
       is_last_sold_price: resolvedPrice.is_last_sold_price,
     });
