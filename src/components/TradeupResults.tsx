@@ -56,6 +56,7 @@ interface TradeupOutcome {
   image_url: string | null;
   is_target: boolean;
   is_last_sold_price: boolean;
+  has_active_listing: boolean;
   expected_float: number;
   expected_wear: string;
 }
@@ -73,7 +74,8 @@ interface TradeupCombo {
   avg_normalized_float: number;
   float_source: FloatSource;
   all_outcomes: TradeupOutcome[];
-  has_last_sold_prices: boolean;
+  has_unlisted_outcomes: boolean;
+  has_unpriced_outcomes: boolean;
 }
 
 interface TradeupFinderResult {
@@ -82,7 +84,10 @@ interface TradeupFinderResult {
     skin_name: string;
     weapon_name: string;
     wear: string;
+    is_stattrak: boolean;
     price_cents: number | null;
+    has_active_listing: boolean;
+    last_sold_cents: number | null;
     image_url: string | null;
   };
   tradeups: TradeupCombo[];
@@ -95,14 +100,30 @@ function formatPrice(cents: number | null): string {
 
 const WEAR_OPTIONS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
 
+function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+// "2 outcomes have no active listing and 1 outcome has no recorded sales (counted as $0)"
+function describeSkew(unlisted: number, unpriced: number): string {
+  const parts: string[] = [];
+  if (unlisted > 0) parts.push(`${pluralize(unlisted, 'outcome')} ${unlisted === 1 ? 'has' : 'have'} no active listing`);
+  if (unpriced > 0) parts.push(`${pluralize(unpriced, 'outcome')} ${unpriced === 1 ? 'has' : 'have'} no recorded sales (counted as $0)`);
+  return parts.join(' and ');
+}
+
 export default function TradeupResults({
   skinId,
+  skinName,
   hasStatTrak,
   availableWears,
+  listedWears,
 }: {
   skinId: string;
+  skinName: string;
   hasStatTrak: boolean;
   availableWears: string[];
+  listedWears: { normal: string[]; stattrak: string[] };
 }) {
   const [wear, setWear] = useState(() => {
     return WEAR_OPTIONS.find((w) => availableWears.includes(w)) ?? availableWears[0] ?? 'Factory New';
@@ -111,6 +132,13 @@ export default function TradeupResults({
   const [result, setResult] = useState<TradeupFinderResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Does the requested target variant have an active listing? The API answer is fresher, so
+  // prefer it whenever it was computed for the current wear/StatTrak selection.
+  const selectionMatchesResult = result != null && result.target.wear === wear && result.target.is_stattrak === isStatTrak;
+  const targetWearListed = selectionMatchesResult
+    ? result.target.has_active_listing
+    : (isStatTrak ? listedWears.stattrak : listedWears.normal).includes(wear);
 
   async function fetchTradeups() {
     setLoading(true);
@@ -175,6 +203,23 @@ export default function TradeupResults({
         </button>
       </div>
 
+      <div className="mb-4 rounded border border-zinc-700 bg-zinc-800/40 px-3 py-2 text-xs leading-5 text-zinc-400">
+        <span className="font-medium text-zinc-300">Pricing disclaimer:</span> input prices are the lowest active Steam Community
+        Market listing, and only skins with an active listing are ever used as inputs. Outcome prices are the average of the
+        last 5 recorded Steam sales for the exact wear the contract is expected to produce, not a live listing. EV and
+        cost-per-hit figures are estimates; Steam fees, float rolls, and price movement will change what you actually pay and receive.
+      </div>
+
+      {!targetWearListed && (
+        <div className="mb-4 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+          <span className="font-medium">
+            No active Steam listing for {skinName} ({isStatTrak ? 'StatTrak ' : ''}{wear}).
+          </span>{' '}
+          There is no live listed price for this target, so its outcome value relies on past sales only and the prices,
+          EV, and cost-per-hit shown may be skewed.
+        </div>
+      )}
+
       {error && (
         <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/20 rounded px-3 py-2 mb-4">
           {error}
@@ -230,6 +275,9 @@ function TradeupCard({
   const [evaluating, setEvaluating] = useState(false);
   const [floatEditorOpen, setFloatEditorOpen] = useState(!combo.target_matches_requested_wear);
   const evPositive = workingCombo.ev_cents >= 0;
+  const unlistedOutcomeCount = workingCombo.all_outcomes.filter((o) => !o.has_active_listing).length;
+  const unpricedOutcomeCount = workingCombo.all_outcomes.filter((o) => o.price_cents == null).length;
+  const evSkewed = unlistedOutcomeCount > 0 || unpricedOutcomeCount > 0;
 
   useEffect(() => {
     setWorkingCombo(combo);
@@ -266,7 +314,6 @@ function TradeupCard({
             collection_id: input.collection_id,
             market_hash_name: input.market_hash_name,
             wear_name: input.wear_name,
-            price_cents: input.price_cents,
             input_float: parsedFloats[index],
           })),
         }),
@@ -312,14 +359,14 @@ function TradeupCard({
         <div className="flex items-center gap-4">
           <span
             className={`text-sm font-medium relative ${evPositive ? 'text-green-400' : 'text-red-400'}`}
-            onMouseEnter={() => workingCombo.has_last_sold_prices && setShowEvTooltip(true)}
+            onMouseEnter={() => evSkewed && setShowEvTooltip(true)}
             onMouseLeave={() => setShowEvTooltip(false)}
           >
             EV: <ScrambleText text={`${evPositive ? '+' : ''}${formatPrice(workingCombo.ev_cents)}`} scrambleSpeed={20} delay={400}/>
-            {workingCombo.has_last_sold_prices && <span className="text-orange-400">*</span>}
+            {evSkewed && <span className="text-red-400">*</span>}
             {showEvTooltip && (
               <span className="absolute top-full right-0 mt-2 w-max max-w-xs px-3 py-2 text-xs text-zinc-200 bg-zinc-900 border border-zinc-600 rounded-lg shadow-lg z-50 font-normal text-left pointer-events-none">
-                EV may be skewed because one or more outcomes only had last-sold fallback pricing.
+                EV may be skewed: {describeSkew(unlistedOutcomeCount, unpricedOutcomeCount)}.
               </span>
             )}
           </span>
@@ -459,6 +506,14 @@ function TradeupCard({
                 (avg normalized float: {workingCombo.avg_normalized_float.toFixed(4)})
               </span>
             </h4>
+            <p className="text-xs text-zinc-500 mb-2">
+              Prices are the average of the last 5 Steam sales at the estimated wear, not current listings.
+            </p>
+            {evSkewed && (
+              <p className="text-xs text-red-400 mb-2">
+                {describeSkew(unlistedOutcomeCount, unpricedOutcomeCount)}, so the EV may be skewed.
+              </p>
+            )}
             <div className="space-y-1.5">
               {workingCombo.all_outcomes.map((outcome, index) => (
                 <div key={`${outcome.skin_id}:${index}`} className="flex items-center gap-3 text-sm">
@@ -476,6 +531,16 @@ function TradeupCard({
                       {outcome.is_target && (
                         <span className="text-[10px] uppercase bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">
                           target
+                        </span>
+                      )}
+                      {!outcome.has_active_listing && (
+                        <span className="text-[10px] uppercase bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded">
+                          no listing
+                        </span>
+                      )}
+                      {outcome.price_cents == null && (
+                        <span className="text-[10px] uppercase bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded">
+                          no sales data
                         </span>
                       )}
                     </div>

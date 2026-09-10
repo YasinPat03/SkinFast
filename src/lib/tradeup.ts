@@ -50,14 +50,18 @@ export interface TradeupEligibility {
     id: string;
     name: string;
     image_url: string | null;
+    // Only skins with an active Steam listing: unlisted skins are never used as inputs.
     input_skins: (SkinRow & {
-      cheapest_price_cents: number | null;
-      is_last_sold_price: boolean;
+      cheapest_price_cents: number;
       cheapest_is_souvenir: boolean;
     })[];
+    // Input-rarity skins in this collection hidden because they have no active listing.
+    unlisted_input_count: number;
     output_skins: (SkinRow & {
+      // Cheapest last-5-sold avg across normal wears; outcomes are never priced from listings.
       cheapest_price_cents: number | null;
-      is_last_sold_price: boolean;
+      // False when no normal (non-souvenir) wear of this skin is actively listed.
+      has_active_listing: boolean;
       // Skin ids merged into this outcome (Doppler phases share one loot entry).
       alias_ids: string[];
     })[];
@@ -151,17 +155,10 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
   // Group by collection. Inputs are priced at the current listing (must be buyable);
   // outputs are priced at the last-5 sold avg (what the user would realize selling).
   const collectionData = collections.map((col) => {
-    const colInputs = inputSkins
-      .filter((s) => s.collection_id === col.id)
-      .map((s) => {
-        const priceInfo = cheapestPrices.get(s.id);
-        return {
-          ...s,
-          cheapest_price_cents: priceInfo?.listing ?? null,
-          is_last_sold_price: false,
-          cheapest_is_souvenir: priceInfo?.listingIsSouvenir ?? false,
-        };
-      });
+    const { listed: colInputs, unlistedCount } = buildListedInputs(
+      inputSkins.filter((s) => s.collection_id === col.id),
+      cheapestPrices
+    );
 
     const colOutputs = outputSkins
       .filter((s) => s.collection_id === col.id)
@@ -170,7 +167,7 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
         return {
           ...s,
           cheapest_price_cents: priceInfo?.lastSold ?? null,
-          is_last_sold_price: priceInfo?.lastSold != null,
+          has_active_listing: priceInfo?.normalListing != null,
           alias_ids: [s.id],
         };
       });
@@ -180,6 +177,7 @@ export async function getTradeupEligibility(skinId: string): Promise<TradeupElig
       name: col.name,
       image_url: col.image_url,
       input_skins: colInputs,
+      unlisted_input_count: unlistedCount,
       output_skins: colOutputs,
     };
   });
@@ -247,29 +245,28 @@ async function getGoldTradeupEligibility(skinId: string): Promise<TradeupEligibi
         const value = cheapestPrices.get(row.id)!.lastSold!;
         return min == null || value < min ? value : min;
       }, null);
-      return { ...representative, collapsed_last_sold: lastSold, alias_ids: group.map((row) => row.id) };
+      const hasListing = group.some((row) => cheapestPrices.get(row.id)?.normalListing != null);
+      return {
+        ...representative,
+        collapsed_last_sold: lastSold,
+        collapsed_has_listing: hasListing,
+        alias_ids: group.map((row) => row.id),
+      };
     });
 
   // Group by crate. Same split as standard: inputs from listings, outputs from last-5 avg.
   const collectionData = crates.map((crate) => {
-    const crateInputs = inputSkins
-      .filter((s) => s.collection_id === crate.id)
-      .map((s) => {
-        const priceInfo = cheapestPrices.get(s.id);
-        return {
-          ...s,
-          cheapest_price_cents: priceInfo?.listing ?? null,
-          is_last_sold_price: false,
-          cheapest_is_souvenir: priceInfo?.listingIsSouvenir ?? false,
-        };
-      });
+    const { listed: crateInputs, unlistedCount } = buildListedInputs(
+      inputSkins.filter((s) => s.collection_id === crate.id),
+      cheapestPrices
+    );
 
     const crateOutputs = outputSkins
       .filter((s) => s.collection_id === crate.id)
-      .map(({ collapsed_last_sold, ...s }) => ({
+      .map(({ collapsed_last_sold, collapsed_has_listing, ...s }) => ({
         ...s,
         cheapest_price_cents: collapsed_last_sold,
-        is_last_sold_price: collapsed_last_sold != null,
+        has_active_listing: collapsed_has_listing,
       }));
 
     return {
@@ -277,6 +274,7 @@ async function getGoldTradeupEligibility(skinId: string): Promise<TradeupEligibi
       name: crate.name,
       image_url: crate.image_url,
       input_skins: crateInputs,
+      unlisted_input_count: unlistedCount,
       output_skins: crateOutputs,
     };
   });
@@ -296,9 +294,40 @@ async function getGoldTradeupEligibility(skinId: string): Promise<TradeupEligibi
 }
 
 interface CheapestPriceInfo {
+  // Cheapest active listing across normal and souvenir wears (both are legal inputs).
   listing: number | null;
   listingIsSouvenir: boolean;
+  // Cheapest active listing across normal wears only (an output is never a souvenir).
+  normalListing: number | null;
   lastSold: number | null;
+}
+
+// Inputs must be buyable right now: skins without an active listing (normal or souvenir) are
+// dropped and only counted, so the UI can say how many were hidden.
+function buildListedInputs(
+  rows: InputSkinRow[],
+  cheapestPrices: Map<string, CheapestPriceInfo>
+): {
+  listed: (InputSkinRow & { cheapest_price_cents: number; cheapest_is_souvenir: boolean })[];
+  unlistedCount: number;
+} {
+  const listed: (InputSkinRow & { cheapest_price_cents: number; cheapest_is_souvenir: boolean })[] = [];
+  let unlistedCount = 0;
+
+  for (const row of rows) {
+    const priceInfo = cheapestPrices.get(row.id);
+    if (priceInfo?.listing == null) {
+      unlistedCount++;
+      continue;
+    }
+    listed.push({
+      ...row,
+      cheapest_price_cents: priceInfo.listing,
+      cheapest_is_souvenir: priceInfo.listingIsSouvenir,
+    });
+  }
+
+  return { listed, unlistedCount };
 }
 
 // For each non-StatTrak skin, return the cheapest current listing for input pricing
@@ -323,12 +352,16 @@ async function getCheapestPrices(skinIds: string[]): Promise<Map<string, Cheapes
 
   const map = new Map<string, CheapestPriceInfo>();
   for (const row of rows) {
-    const info = map.get(row.skin_id) ?? { listing: null, listingIsSouvenir: false, lastSold: null };
+    const info = map.get(row.skin_id) ?? { listing: null, listingIsSouvenir: false, normalListing: null, lastSold: null };
 
-    if (row.lowest_price_cents != null && row.lowest_price_cents > 0
-      && (info.listing == null || row.lowest_price_cents < info.listing)) {
-      info.listing = row.lowest_price_cents;
-      info.listingIsSouvenir = row.is_souvenir;
+    if (row.lowest_price_cents != null && row.lowest_price_cents > 0) {
+      if (info.listing == null || row.lowest_price_cents < info.listing) {
+        info.listing = row.lowest_price_cents;
+        info.listingIsSouvenir = row.is_souvenir;
+      }
+      if (!row.is_souvenir && (info.normalListing == null || row.lowest_price_cents < info.normalListing)) {
+        info.normalListing = row.lowest_price_cents;
+      }
     }
 
     if (!row.is_souvenir && row.avg_last5_cents != null && row.avg_last5_cents > 0

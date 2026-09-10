@@ -69,6 +69,8 @@ interface OutputSkin {
   max_float: number;
   // wear_name -> last_sold_avg.avg_last5_cents (volume-weighted last 5 sales)
   last_sold_by_wear: Record<string, number>;
+  // wear_name -> true when that exact variant currently has an active Steam listing
+  listed_wears: Record<string, boolean>;
   // All skin ids folded into this outcome (Doppler phases share one loot entry).
   alias_skin_ids: string[];
 }
@@ -123,6 +125,8 @@ export interface TradeupOutcomeEvaluation {
   image_url: string | null;
   is_target: boolean;
   is_last_sold_price: boolean;
+  // False when the exact variant this outcome is expected to produce has no active listing.
+  has_active_listing: boolean;
   expected_float: number;
   expected_wear: string;
 }
@@ -140,15 +144,19 @@ export interface TradeupCombo {
   avg_normalized_float: number;
   float_source: FloatSource;
   all_outcomes: TradeupOutcomeEvaluation[];
-  has_last_sold_prices: boolean;
+  // At least one outcome's expected variant has no active Steam listing.
+  has_unlisted_outcomes: boolean;
+  // At least one outcome has no recorded last-5-sold price (its value counts as 0 in EV).
+  has_unpriced_outcomes: boolean;
 }
 
+// Prices are never taken from the client: the server re-reads the live listing for each
+// market_hash_name and rejects inputs that are not currently listed.
 export interface ExactTradeupInput {
   skin_id: string;
   collection_id: string;
   market_hash_name: string;
   wear_name: string;
-  price_cents: number;
   input_float: number;
 }
 
@@ -158,7 +166,12 @@ export interface TradeupFinderResult {
     skin_name: string;
     weapon_name: string;
     wear: string;
+    is_stattrak: boolean;
+    // Lowest active listing for the target at the requested wear, null when unlisted.
     price_cents: number | null;
+    has_active_listing: boolean;
+    // Last-5-sold avg for the target at the requested wear (what outcomes are valued at).
+    last_sold_cents: number | null;
     image_url: string | null;
   };
   tradeups: TradeupCombo[];
@@ -187,18 +200,22 @@ export async function findBestTradeup(
   const stattrakFilter = isStatTrak;
   // The contract output is always a normal (or StatTrak) item, never a souvenir. Doppler
   // phases share a single market listing, so match by name rather than by the exact skin id.
-  const targetPriceRows = await sql<{ lowest_price_cents: number }[]>`
-    SELECT p.lowest_price_cents
+  const targetPriceRows = await sql<{ lowest_price_cents: number | null; last_sold_cents: number | null }[]>`
+    SELECT p.lowest_price_cents, l.avg_last5_cents AS last_sold_cents
     FROM skin_variants sv
     JOIN skins s ON s.id = sv.skin_id
-    JOIN prices p ON sv.market_hash_name = p.market_hash_name
+    LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
+    LEFT JOIN last_sold_avg l ON sv.market_hash_name = l.market_hash_name
     WHERE s.name = ${targetSkin.name} AND s.weapon_name = ${targetSkin.weapon_name}
       AND sv.wear_name = ${targetWear}
       AND sv.is_stattrak = ${stattrakFilter} AND sv.is_souvenir = FALSE
-    ORDER BY p.lowest_price_cents ASC
+    ORDER BY (p.lowest_price_cents > 0) DESC NULLS LAST, p.lowest_price_cents ASC NULLS LAST
     LIMIT 1
   `;
   const targetPrice = targetPriceRows[0];
+  const targetListingCents = targetPrice?.lowest_price_cents != null && targetPrice.lowest_price_cents > 0
+    ? targetPrice.lowest_price_cents
+    : null;
 
   const isGold = isKnifeOrGloveWeapon(targetSkin.weapon_name);
   const numInputs = isGold ? 5 : 10;
@@ -223,7 +240,11 @@ export async function findBestTradeup(
   );
 
   if (targetCandidates.length === 0) {
-    return { error: isGold ? 'No Covert inputs found in same cases' : 'No inputs found in same collections' };
+    return {
+      error: isGold
+        ? 'No Covert inputs with an active Steam listing found in the same cases'
+        : 'No inputs with an active Steam listing found in the same collections',
+    };
   }
 
   const outputCache = new Map<string, OutputSkin[]>();
@@ -291,7 +312,14 @@ export async function findBestTradeup(
   // Prefer combos where estimated wear matches, but fall back to all combos
   // (e.g. Factory New gloves need very low float inputs that midpoint estimates can't capture)
   const wearMatching = uniqueCombos.filter((c) => c.target_matches_requested_wear);
-  const ranked = wearMatching.length > 0 ? wearMatching : uniqueCombos;
+  const wearPool = wearMatching.length > 0 ? wearMatching : uniqueCombos;
+
+  // Never pick a combo that drags in an outcome without an active listing (typically a filler
+  // collection whose outputs are not on the market) when a fully listed alternative exists.
+  // When the target's own collection has unlisted outputs every combo carries them, so the
+  // results are returned flagged (has_unlisted_outcomes) instead of empty.
+  const fullyListed = wearPool.filter((c) => !c.has_unlisted_outcomes);
+  const ranked = fullyListed.length > 0 ? fullyListed : wearPool;
 
   ranked.sort((a, b) => b.ev_cents - a.ev_cents);
   const top5 = ranked.slice(0, 5).map((c, i) => ({ ...c, rank: i + 1 }));
@@ -302,7 +330,12 @@ export async function findBestTradeup(
       skin_name: targetSkin.name,
       weapon_name: targetSkin.weapon_name,
       wear: targetWear,
-      price_cents: targetPrice?.lowest_price_cents ?? null,
+      is_stattrak: isStatTrak,
+      price_cents: targetListingCents,
+      has_active_listing: targetListingCents != null,
+      last_sold_cents: targetPrice?.last_sold_cents != null && targetPrice.last_sold_cents > 0
+        ? targetPrice.last_sold_cents
+        : null,
       image_url: targetSkin.image_url,
     },
     tradeups: top5,
@@ -347,10 +380,17 @@ export async function evaluateTradeupContract(
   const inputSkinMap = new Map(inputSkinRows.map((row) => [row.id, row]));
 
   const inputHashNames = [...new Set(inputs.map((input) => input.market_hash_name))];
-  const inputVariantRows = await sql<{ market_hash_name: string; skin_id: string; is_stattrak: boolean; is_souvenir: boolean }[]>`
-    SELECT market_hash_name, skin_id, is_stattrak, is_souvenir
-    FROM skin_variants
-    WHERE market_hash_name IN ${sql(inputHashNames)}
+  const inputVariantRows = await sql<{
+    market_hash_name: string;
+    skin_id: string;
+    is_stattrak: boolean;
+    is_souvenir: boolean;
+    lowest_price_cents: number | null;
+  }[]>`
+    SELECT sv.market_hash_name, sv.skin_id, sv.is_stattrak, sv.is_souvenir, p.lowest_price_cents
+    FROM skin_variants sv
+    LEFT JOIN prices p ON p.market_hash_name = sv.market_hash_name
+    WHERE sv.market_hash_name IN ${sql(inputHashNames)}
   `;
   const inputVariantMap = new Map(inputVariantRows.map((row) => [row.market_hash_name, row]));
 
@@ -410,6 +450,11 @@ export async function evaluateTradeupContract(
       return { error: `Souvenir items cannot be used in a StatTrak contract (${skin.name})` };
     }
 
+    // Inputs must be buyable right now: no active listing means the variant is not usable.
+    if (variant.lowest_price_cents == null || variant.lowest_price_cents <= 0) {
+      return { error: `${input.market_hash_name} has no active Steam listing and cannot be used as an input` };
+    }
+
     const clampedFloat = Math.min(Math.max(input.input_float, skin.min_float), skin.max_float);
     resolvedInputs.push({
       slot: index + 1,
@@ -417,7 +462,7 @@ export async function evaluateTradeupContract(
       skin_name: skin.name,
       weapon_name: skin.weapon_name,
       wear_name: input.wear_name,
-      price_cents: input.price_cents,
+      price_cents: variant.lowest_price_cents,
       is_last_sold_price: false,
       is_souvenir: isSouvenirInput,
       collection_id: input.collection_id,
@@ -734,7 +779,8 @@ function evaluateResolvedTradeup(
   const costPerAttempt = requestedTargetProb > 0 ? Math.round(totalCost / requestedTargetProb) : null;
 
   let ev = -totalCost;
-  let anyLastSold = false;
+  let anyUnlisted = false;
+  let anyUnpriced = false;
   const allOutcomes: TradeupOutcomeEvaluation[] = [];
 
   for (const [skinId, prob] of outcomeProbs) {
@@ -744,24 +790,19 @@ function evaluateResolvedTradeup(
     const outputFloat = calculateOutputFloat(avgNormalizedFloat, output.min_float, output.max_float);
     const outputWear = floatToWear(outputFloat);
 
-    // Outcome value = last 5 sold avg only (this is what the user would realistically
-    // sell the output for). No fallback to current listings.
-    let priceAtWear = output.last_sold_by_wear[outputWear] ?? null;
-
-    if (priceAtWear === null) {
-      const availableLastSold = Object.values(output.last_sold_by_wear);
-      if (availableLastSold.length > 0) {
-        priceAtWear = Math.min(...availableLastSold);
-      }
-    }
-
-    const isLastSold = priceAtWear != null;
+    // Outcome value = last-5-sold avg for the exact wear the contract is expected to produce
+    // (what the user would realistically sell it for). No fallback to current listings and no
+    // fallback to another wear: a missing figure stays null and is flagged, never substituted.
+    const priceAtWear = output.last_sold_by_wear[outputWear] ?? null;
+    const hasActiveListing = output.listed_wears[outputWear] === true;
 
     if (priceAtWear != null) {
       ev += priceAtWear * prob;
+    } else {
+      anyUnpriced = true;
     }
 
-    if (isLastSold) anyLastSold = true;
+    if (!hasActiveListing) anyUnlisted = true;
 
     allOutcomes.push({
       skin_id: skinId,
@@ -771,7 +812,8 @@ function evaluateResolvedTradeup(
       price_cents: priceAtWear,
       image_url: output.image_url,
       is_target: skinId === resolvedTargetId,
-      is_last_sold_price: isLastSold,
+      is_last_sold_price: priceAtWear != null,
+      has_active_listing: hasActiveListing,
       expected_float: Math.round(outputFloat * 100000) / 100000,
       expected_wear: outputWear,
     });
@@ -824,7 +866,8 @@ function evaluateResolvedTradeup(
     avg_normalized_float: Math.round(avgNormalizedFloat * 100000) / 100000,
     float_source: floatSource,
     all_outcomes: allOutcomes,
-    has_last_sold_prices: anyLastSold,
+    has_unlisted_outcomes: anyUnlisted,
+    has_unpriced_outcomes: anyUnpriced,
   };
 }
 
@@ -1021,15 +1064,21 @@ async function batchLoadVariantPrices(
   return grouped;
 }
 
-function buildLastSoldByWear(rows: VariantPriceRow[]): Record<string, number> {
-  const lastSold: Record<string, number> = {};
+// Output pricing per wear: the last-5-sold avg (the only figure outcomes are valued at) and
+// whether that exact variant is actively listed. Souvenir rows never price an output.
+function buildOutputPricingByWear(rows: VariantPriceRow[]): Pick<OutputSkin, 'last_sold_by_wear' | 'listed_wears'> {
+  const last_sold_by_wear: Record<string, number> = {};
+  const listed_wears: Record<string, boolean> = {};
   for (const row of rows) {
     if (row.is_souvenir) continue;
     if (row.last_sold_avg_cents != null && row.last_sold_avg_cents > 0) {
-      lastSold[row.wear_name] = row.last_sold_avg_cents;
+      last_sold_by_wear[row.wear_name] = row.last_sold_avg_cents;
+    }
+    if (row.lowest_price_cents != null && row.lowest_price_cents > 0) {
+      listed_wears[row.wear_name] = true;
     }
   }
-  return lastSold;
+  return { last_sold_by_wear, listed_wears };
 }
 
 async function buildCandidatesWithWears(
@@ -1119,17 +1168,16 @@ async function gatherOutputSkins(
 
   const results: OutputSkin[] = [];
   for (const row of rows) {
-    const last_sold_by_wear = buildLastSoldByWear(variantMap.get(row.skin_id) ?? []);
     results.push({
       ...row,
-      last_sold_by_wear,
+      ...buildOutputPricingByWear(variantMap.get(row.skin_id) ?? []),
       alias_skin_ids: [row.skin_id],
     });
   }
   return results;
 }
 
-type RawOutputRow = Omit<OutputSkin, 'last_sold_by_wear' | 'alias_skin_ids'>;
+type RawOutputRow = Omit<OutputSkin, 'last_sold_by_wear' | 'listed_wears' | 'alias_skin_ids'>;
 
 async function gatherOutputSkinsFromCrates(
   crateIds: Set<string>,
@@ -1165,7 +1213,7 @@ async function gatherOutputSkinsFromCrates(
     const representative = group.find((row) => (variantMap.get(row.skin_id) ?? []).length > 0) ?? group[0];
     results.push({
       ...representative,
-      last_sold_by_wear: buildLastSoldByWear(variantRows),
+      ...buildOutputPricingByWear(variantRows),
       alias_skin_ids: group.map((row) => row.skin_id),
     });
   }

@@ -189,6 +189,17 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
       .map((v) => v.wear_name)
   )];
 
+  // Wears that currently have an active listing, so the tradeup finder can warn when the
+  // requested target wear has no live listed price.
+  const listedWears = {
+    normal: variants
+      .filter((v) => !v.is_stattrak && !v.is_souvenir && (v.lowest_price_cents ?? 0) > 0)
+      .map((v) => v.wear_name),
+    stattrak: variants
+      .filter((v) => v.is_stattrak && (v.lowest_price_cents ?? 0) > 0)
+      .map((v) => v.wear_name),
+  };
+
   const lowestPriceVariant = variants
     .filter(v => v.lowest_price_cents != null)
     .sort((a, b) => a.lowest_price_cents! - b.lowest_price_cents!)[0];
@@ -355,7 +366,13 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
         )}
 
         {/* Tradeup Section */}
-        <TradeupSection skinId={id} skin={skin} tradeup={tradeup} availableWears={availableWears} />
+        <TradeupSection
+          skinId={id}
+          skin={skin}
+          tradeup={tradeup}
+          availableWears={availableWears}
+          listedWears={listedWears}
+        />
       </div>
     </div>
   );
@@ -420,11 +437,12 @@ function PriceCell({
   );
 }
 
-function TradeupSection({ skinId, skin, tradeup, availableWears }: {
+function TradeupSection({ skinId, skin, tradeup, availableWears, listedWears }: {
   skinId: string;
   skin: SkinRow;
   tradeup: Awaited<ReturnType<typeof getTradeupEligibility>>;
   availableWears: string[];
+  listedWears: { normal: string[]; stattrak: string[] };
 }) {
   return (
     <div className="mt-8 border-t border-zinc-700 pt-8">
@@ -460,7 +478,7 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                   <summary className="px-4 py-2.5 cursor-pointer text-sm text-zinc-300 hover:text-white transition-colors">
                     {col.name}
                     <span className="text-zinc-400 ml-2">
-                      ({col.input_skins.length} inputs, {col.output_skins.length} outputs)
+                      ({col.input_skins.length} listed input{col.input_skins.length === 1 ? '' : 's'}, {col.output_skins.length} output{col.output_skins.length === 1 ? '' : 's'})
                     </span>
                   </summary>
                   <div className="px-4 pb-3 border-t border-zinc-700/50">
@@ -473,6 +491,16 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                             <span className="text-zinc-300">{s.name}</span>
                           </div>
                         ))}
+                        {col.input_skins.length === 0 && (
+                          <div className="text-sm text-zinc-500">
+                            No {tradeup.input_rarity_name} skin from this {tradeup.input_type === 'gold' ? 'case' : 'collection'} has an active Steam listing right now.
+                          </div>
+                        )}
+                        {col.unlisted_input_count > 0 && (
+                          <div className="text-xs text-zinc-500">
+                            {col.unlisted_input_count} skin{col.unlisted_input_count === 1 ? '' : 's'} without an active listing hidden (never used as inputs).
+                          </div>
+                        )}
                       </div>
                     </div>
                     <div className="mt-3">
@@ -488,6 +516,11 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
                                 {s.alias_ids.length > 1 && ' (any phase)'}
                                 {isTarget && ' (target)'}
                               </span>
+                              {!s.has_active_listing && (
+                                <span className="text-[10px] uppercase bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded">
+                                  no active listing
+                                </span>
+                              )}
                             </div>
                           );
                         })}
@@ -502,8 +535,10 @@ function TradeupSection({ skinId, skin, tradeup, availableWears }: {
           {/* Best tradeup finder */}
           <TradeupResults
             skinId={skinId}
+            skinName={skin.name}
             hasStatTrak={skin.has_stattrak}
             availableWears={availableWears}
+            listedWears={listedWears}
           />
         </div>
       )}

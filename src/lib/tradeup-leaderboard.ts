@@ -38,16 +38,20 @@ interface PriceOption {
   wear_name: string;
   market_hash_name: string;
   price_cents: number;
-  is_last_sold_price: boolean;
   is_souvenir: boolean;
   assumed_float: number;
   t_float: number;
 }
 
+// Output pricing for one exact variant (skin + wear). Outcomes are valued strictly at the
+// last-5-sold avg (last_sold_avg.avg_last5_cents) and only shown when actively listed.
+interface OutputVariantPricing {
+  last_sold_cents: number | null;
+  has_active_listing: boolean;
+}
+
 interface PriceLookup {
-  // wear_name -> last_sold_avg.avg_last5_cents (volume-weighted last 5 sales)
-  last_sold_by_wear: Record<string, number>;
-  cheapest_last_sold_cents: number | null;
+  by_wear: Record<string, OutputVariantPricing>;
 }
 
 interface SkinMeta {
@@ -64,8 +68,8 @@ export interface TradeupLeaderboardOutcome {
   probability: number;
   expected_float: number;
   expected_wear: string;
-  price_cents: number | null;
-  is_last_sold_price: boolean;
+  // Avg of the last 5 recorded sales for expected_wear; every listed outcome has one.
+  price_cents: number;
 }
 
 export interface TradeupLeaderboardEntry {
@@ -82,7 +86,6 @@ export interface TradeupLeaderboardEntry {
     wear_name: string;
     market_hash_name: string;
     price_cents: number;
-    is_last_sold_price: boolean;
     is_souvenir: boolean;
     expected_float: number;
   };
@@ -91,8 +94,7 @@ export interface TradeupLeaderboardEntry {
   ev_cents: number;
   roi_percent: number;
   outcome_count: number;
-  best_outcome_price_cents: number | null;
-  has_last_sold_prices: boolean;
+  best_outcome_price_cents: number;
   outcomes: TradeupLeaderboardOutcome[];
 }
 
@@ -181,7 +183,7 @@ const getCachedTradeupContracts = unstable_cache(
       return a.total_cost_cents - b.total_cost_cents;
     });
   },
-  ['tradeup-leaderboard-contracts-v5'],
+  ['tradeup-leaderboard-contracts-v6'],
   { revalidate: 900 }
 );
 
@@ -225,7 +227,6 @@ function buildPriceMaps(
         wear_name: row.wear_name,
         market_hash_name: row.market_hash_name,
         price_cents: row.lowest_price_cents!,
-        is_last_sold_price: false,
         is_souvenir: row.is_souvenir,
         assumed_float: assumedFloat,
         t_float: calculateTFloat(assumedFloat, meta.min_float, meta.max_float),
@@ -239,22 +240,20 @@ function buildPriceMaps(
       }
     }
 
-    // Outputs are valued at the last-5 sold avg (what the user would realistically realize selling).
+    // Outputs are valued at the last-5 sold avg of the exact wear the contract produces (what
+    // the user would realistically realize selling) and must be actively listed to be shown.
     // A contract never produces a souvenir, so only normal variants price outputs.
-    if (lastSoldAvg != null && !row.is_souvenir) {
+    if (!row.is_souvenir) {
       let lookup = priceLookupBySkinId.get(row.skin_id);
       if (!lookup) {
-        lookup = {
-          last_sold_by_wear: {},
-          cheapest_last_sold_cents: null,
-        };
+        lookup = { by_wear: {} };
         priceLookupBySkinId.set(row.skin_id, lookup);
       }
 
-      lookup.last_sold_by_wear[row.wear_name] = lastSoldAvg;
-      lookup.cheapest_last_sold_cents = lookup.cheapest_last_sold_cents == null
-        ? lastSoldAvg
-        : Math.min(lookup.cheapest_last_sold_cents, lastSoldAvg);
+      lookup.by_wear[row.wear_name] = {
+        last_sold_cents: lastSoldAvg,
+        has_active_listing: hasListing,
+      };
     }
   }
 
@@ -265,25 +264,9 @@ function buildPriceMaps(
   return { wearOptionsBySkinId, priceLookupBySkinId };
 }
 
-function resolveOutputPrice(
-  lookup: PriceLookup | undefined,
-  wearName: string
-): { price_cents: number | null; is_last_sold_price: boolean } {
-  if (!lookup) {
-    return { price_cents: null, is_last_sold_price: false };
-  }
-
-  // Outputs are valued strictly at the last-5 sold avg.
-  const lastSoldPrice = lookup.last_sold_by_wear[wearName];
-  if (lastSoldPrice != null) {
-    return { price_cents: lastSoldPrice, is_last_sold_price: true };
-  }
-
-  if (lookup.cheapest_last_sold_cents != null) {
-    return { price_cents: lookup.cheapest_last_sold_cents, is_last_sold_price: true };
-  }
-
-  return { price_cents: null, is_last_sold_price: false };
+function resolveOutputPrice(lookup: PriceLookup | undefined, wearName: string): OutputVariantPricing {
+  // Strictly the exact wear: no fallback to a listing price and no fallback to another wear.
+  return lookup?.by_wear[wearName] ?? { last_sold_cents: null, has_active_listing: false };
 }
 
 function buildStandardContracts(
@@ -428,8 +411,7 @@ function buildContractEntry({
   const probability = 1 / outputs.length;
   const totalCost = wearOption.price_cents * numInputs;
   let expectedReturn = 0;
-  let hasLastSoldPrices = wearOption.is_last_sold_price;
-  let bestOutcomePrice: number | null = null;
+  let bestOutcomePrice = 0;
   const outcomes: TradeupLeaderboardOutcome[] = [];
 
   for (const output of outputs) {
@@ -439,18 +421,16 @@ function buildContractEntry({
     const expectedFloat = calculateOutputFloat(wearOption.t_float, output.min_float, output.max_float);
     const expectedWear = floatToWear(expectedFloat);
 
-    const resolvedPrice = resolveOutputPrice(priceLookupBySkinId.get(output.skin_id), expectedWear);
+    const pricing = resolveOutputPrice(priceLookupBySkinId.get(output.skin_id), expectedWear);
 
-    if (resolvedPrice.price_cents != null) {
-      expectedReturn += resolvedPrice.price_cents * probability;
-      bestOutcomePrice = bestOutcomePrice == null
-        ? resolvedPrice.price_cents
-        : Math.max(bestOutcomePrice, resolvedPrice.price_cents);
+    // Every possible outcome must be actively listed and have a recorded last-5-sold price.
+    // Otherwise the contract is dropped from the leaderboard instead of shown with a skewed EV.
+    if (!pricing.has_active_listing || pricing.last_sold_cents == null) {
+      return null;
     }
 
-    if (resolvedPrice.is_last_sold_price) {
-      hasLastSoldPrices = true;
-    }
+    expectedReturn += pricing.last_sold_cents * probability;
+    bestOutcomePrice = Math.max(bestOutcomePrice, pricing.last_sold_cents);
 
     outcomes.push({
       skin_id: output.skin_id,
@@ -460,16 +440,11 @@ function buildContractEntry({
       probability: Math.round(probability * 10000) / 10000,
       expected_float: Math.round(expectedFloat * 100000) / 100000,
       expected_wear: expectedWear,
-      price_cents: resolvedPrice.price_cents,
-      is_last_sold_price: resolvedPrice.is_last_sold_price,
+      price_cents: pricing.last_sold_cents,
     });
   }
 
-  outcomes.sort((a, b) => {
-    const priceA = a.price_cents ?? -1;
-    const priceB = b.price_cents ?? -1;
-    return priceB - priceA;
-  });
+  outcomes.sort((a, b) => b.price_cents - a.price_cents);
 
   const ev = Math.round(expectedReturn - totalCost);
   const roiPercent = totalCost > 0 ? Math.round((ev / totalCost) * 10000) / 100 : 0;
@@ -488,7 +463,6 @@ function buildContractEntry({
       wear_name: wearOption.wear_name,
       market_hash_name: wearOption.market_hash_name,
       price_cents: wearOption.price_cents,
-      is_last_sold_price: wearOption.is_last_sold_price,
       is_souvenir: wearOption.is_souvenir,
       expected_float: Math.round(wearOption.assumed_float * 100000) / 100000,
     },
@@ -498,7 +472,6 @@ function buildContractEntry({
     roi_percent: roiPercent,
     outcome_count: outputs.length,
     best_outcome_price_cents: bestOutcomePrice,
-    has_last_sold_prices: hasLastSoldPrices,
     outcomes,
   };
 }
@@ -512,7 +485,6 @@ export async function getTradeupLeaderboard({
   const allEntries = await getCachedTradeupContracts();
 
   const filtered = allEntries.filter((entry) => {
-    if (entry.input.is_last_sold_price) return false;
     if (entry.total_cost_cents < minCostCents) return false;
     if (maxCostCents != null && entry.total_cost_cents > maxCostCents) return false;
     return true;

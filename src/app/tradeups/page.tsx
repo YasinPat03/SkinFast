@@ -78,6 +78,14 @@ export default async function TradeupsPage({
             defaultMinCost={params.minCost}
             defaultMaxCost={params.maxCost}
           />
+
+          <div className="rounded-xl border border-zinc-700 bg-zinc-950/70 px-4 py-3 text-xs leading-5 text-zinc-400">
+            <span className="font-medium text-zinc-300">Pricing disclaimer:</span> input prices are the lowest active Steam
+            Community Market listing. Outcome prices are the average of the last 5 recorded Steam sales for the wear each
+            outcome is expected to land in, not a live listing. Only contracts where every input and every possible outcome
+            currently has an active Steam listing are shown; anything unlisted is excluded rather than estimated. EV and ROI
+            are estimates before Steam fees.
+          </div>
         </section>
 
         {leaderboard.entries.length === 0 ? (
@@ -183,11 +191,9 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                   Estimated from input wear.
                 </div>
               </div>
-              {entry.has_last_sold_prices && (
-                <div className="text-xs text-orange-400">
-                  Includes last-sold fallback pricing
-                </div>
-              )}
+              <div className="text-xs text-zinc-500">
+                Avg of last 5 sales
+              </div>
             </div>
 
             <div className="grid gap-3 md:grid-cols-3">
