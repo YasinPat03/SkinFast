@@ -1,4 +1,3 @@
-import { unstable_cache } from 'next/cache';
 import sql from './db';
 import { TRADEUP_INPUT_RARITY } from './types';
 import { TRADEUP_EXCLUDED_COLLECTION_IDS, goldOutcomeKey, groupRows } from './tradeup-rules';
@@ -116,76 +115,109 @@ const INPUT_TO_OUTPUT_RARITY = Object.fromEntries(
 const DEFAULT_LIMIT = 40;
 const MAX_LIMIT = 100;
 
-const getCachedTradeupContracts = unstable_cache(
-  async () => {
-    const [standardRows, crateRows, variantRows] = await Promise.all([
-      sql<MembershipRow[]>`
-        SELECT
-          cs.collection_id,
-          c.name AS collection_name,
-          s.id AS skin_id,
-          s.name AS skin_name,
-          s.weapon_name,
-          s.image_url,
-          s.min_float,
-          s.max_float,
-          cs.rarity_id
-        FROM collection_skins cs
-        JOIN collections c ON c.id = cs.collection_id
-        JOIN skins s ON s.id = cs.skin_id
-        WHERE cs.collection_id NOT IN ${sql(TRADEUP_EXCLUDED_COLLECTION_IDS)}
-      `,
-      sql<CrateMembershipRow[]>`
-        SELECT
-          cs.crate_id AS collection_id,
-          cr.name AS collection_name,
-          s.id AS skin_id,
-          s.name AS skin_name,
-          s.weapon_name,
-          s.image_url,
-          s.min_float,
-          s.max_float,
-          cs.rarity_id,
-          cs.is_rare
-        FROM crate_skins cs
-        JOIN crates cr ON cr.id = cs.crate_id
-        JOIN skins s ON s.id = cs.skin_id
-      `,
-      // Souvenir rows are loaded too: they are legal (non-StatTrak) inputs since May 2026.
-      // They are never used for output pricing — see buildPriceMaps.
-      sql<VariantPriceRow[]>`
-        SELECT
-          sv.skin_id,
-          sv.wear_name,
-          sv.market_hash_name,
-          sv.is_souvenir,
-          p.lowest_price_cents,
-          l.avg_last5_cents AS last_sold_avg_cents
-        FROM skin_variants sv
-        LEFT JOIN prices p ON p.market_hash_name = sv.market_hash_name
-        LEFT JOIN last_sold_avg l ON l.market_hash_name = sv.market_hash_name
-        WHERE sv.is_stattrak = FALSE
-          AND (
-            (p.lowest_price_cents IS NOT NULL AND p.lowest_price_cents > 0)
-            OR (l.avg_last5_cents IS NOT NULL AND l.avg_last5_cents > 0)
-          )
-      `,
-    ]);
+// Every eligible identical-input contract, sorted best EV first. This is ~7k entries and
+// ~18MB serialized, which is far over the 2MB per-item limit of Next's data cache, so
+// `unstable_cache` silently refused to store it and every request rebuilt it from scratch
+// (three heavy queries per page view — a large share of the DB connection load).
+// Cache it in process memory instead, with one shared in-flight build so concurrent
+// requests never trigger parallel rebuilds, and serve a stale copy while refreshing.
+const CONTRACTS_TTL_MS = 15 * 60 * 1000;
 
-    const skinMeta = buildSkinMetaMap([...standardRows, ...crateRows]);
-    const { wearOptionsBySkinId, priceLookupBySkinId } = buildPriceMaps(variantRows, skinMeta);
+let cachedContracts: { value: TradeupLeaderboardEntry[]; expiresAt: number } | null = null;
+let inflightBuild: Promise<TradeupLeaderboardEntry[]> | null = null;
 
-    const standardContracts = buildStandardContracts(standardRows, wearOptionsBySkinId, priceLookupBySkinId);
-    const goldContracts = buildGoldContracts(crateRows, wearOptionsBySkinId, priceLookupBySkinId);
+async function getCachedTradeupContracts(): Promise<TradeupLeaderboardEntry[]> {
+  if (cachedContracts && cachedContracts.expiresAt > Date.now()) {
+    return cachedContracts.value;
+  }
 
-    return [...standardContracts, ...goldContracts].sort((a, b) => {
-      if (b.ev_cents !== a.ev_cents) return b.ev_cents - a.ev_cents;
-      return a.total_cost_cents - b.total_cost_cents;
-    });
-  },
-  ['tradeup-leaderboard-contracts-v6'],
-  { revalidate: 900 }
-);
+  if (!inflightBuild) {
+    inflightBuild = buildTradeupContracts()
+      .then((value) => {
+        cachedContracts = { value, expiresAt: Date.now() + CONTRACTS_TTL_MS };
+        return value;
+      })
+      .finally(() => {
+        inflightBuild = null;
+      });
+  }
+
+  if (cachedContracts) {
+    // Stale-while-revalidate: the refresh runs in the background; a failure there is
+    // logged and retried on the next request rather than failing this render.
+    inflightBuild.catch((err) => console.error('[tradeup-leaderboard] refresh failed', err));
+    return cachedContracts.value;
+  }
+
+  return inflightBuild;
+}
+
+async function buildTradeupContracts(): Promise<TradeupLeaderboardEntry[]> {
+  const [standardRows, crateRows, variantRows] = await Promise.all([
+    sql<MembershipRow[]>`
+      SELECT
+        cs.collection_id,
+        c.name AS collection_name,
+        s.id AS skin_id,
+        s.name AS skin_name,
+        s.weapon_name,
+        s.image_url,
+        s.min_float,
+        s.max_float,
+        cs.rarity_id
+      FROM collection_skins cs
+      JOIN collections c ON c.id = cs.collection_id
+      JOIN skins s ON s.id = cs.skin_id
+      WHERE cs.collection_id NOT IN ${sql(TRADEUP_EXCLUDED_COLLECTION_IDS)}
+    `,
+    sql<CrateMembershipRow[]>`
+      SELECT
+        cs.crate_id AS collection_id,
+        cr.name AS collection_name,
+        s.id AS skin_id,
+        s.name AS skin_name,
+        s.weapon_name,
+        s.image_url,
+        s.min_float,
+        s.max_float,
+        cs.rarity_id,
+        cs.is_rare
+      FROM crate_skins cs
+      JOIN crates cr ON cr.id = cs.crate_id
+      JOIN skins s ON s.id = cs.skin_id
+    `,
+    // Souvenir rows are loaded too: they are legal (non-StatTrak) inputs since May 2026.
+    // They are never used for output pricing — see buildPriceMaps.
+    sql<VariantPriceRow[]>`
+      SELECT
+        sv.skin_id,
+        sv.wear_name,
+        sv.market_hash_name,
+        sv.is_souvenir,
+        p.lowest_price_cents,
+        l.avg_last5_cents AS last_sold_avg_cents
+      FROM skin_variants sv
+      LEFT JOIN prices p ON p.market_hash_name = sv.market_hash_name
+      LEFT JOIN last_sold_avg l ON l.market_hash_name = sv.market_hash_name
+      WHERE sv.is_stattrak = FALSE
+        AND (
+          (p.lowest_price_cents IS NOT NULL AND p.lowest_price_cents > 0)
+          OR (l.avg_last5_cents IS NOT NULL AND l.avg_last5_cents > 0)
+        )
+    `,
+  ]);
+
+  const skinMeta = buildSkinMetaMap([...standardRows, ...crateRows]);
+  const { wearOptionsBySkinId, priceLookupBySkinId } = buildPriceMaps(variantRows, skinMeta);
+
+  const standardContracts = buildStandardContracts(standardRows, wearOptionsBySkinId, priceLookupBySkinId);
+  const goldContracts = buildGoldContracts(crateRows, wearOptionsBySkinId, priceLookupBySkinId);
+
+  return [...standardContracts, ...goldContracts].sort((a, b) => {
+    if (b.ev_cents !== a.ev_cents) return b.ev_cents - a.ev_cents;
+    return a.total_cost_cents - b.total_cost_cents;
+  });
+}
 
 function buildSkinMetaMap(rows: Array<MembershipRow | CrateMembershipRow>): Map<string, SkinMeta> {
   const map = new Map<string, SkinMeta>();
