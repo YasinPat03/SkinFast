@@ -45,6 +45,7 @@ interface VariantRow {
   median_price_cents: number | null;
   last_sold_avg_cents: number | null;
   last_sold_sample_count: number | null;
+  last_sale_at: string | null;
   volume: number | null;
   sell_listings: number | null;
   updated_at: string | null;
@@ -59,6 +60,20 @@ interface CollectionRow {
 function formatPrice(cents: number | null): string {
   if (cents == null) return '-';
   return `$${(cents / 100).toFixed(2)}`;
+}
+
+// "Apr 23", or "Apr 23, 2025" when the sale was in an earlier year.
+function formatSaleDate(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const sameYear = d.getUTCFullYear() === new Date().getUTCFullYear();
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(sameYear ? {} : { year: 'numeric' }),
+    timeZone: 'UTC',
+  });
 }
 
 function timeAgo(dateStr: string | null): string {
@@ -114,7 +129,7 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
     SELECT
       sv.market_hash_name, sv.wear_name, sv.is_stattrak, sv.is_souvenir,
       p.lowest_price_cents, p.median_price_cents, p.volume, p.sell_listings, p.updated_at,
-      l.avg_last5_cents AS last_sold_avg_cents, l.sample_count AS last_sold_sample_count
+      l.avg_last5_cents AS last_sold_avg_cents, l.sample_count AS last_sold_sample_count, l.last_sale_at
     FROM skin_variants sv
     LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
     LEFT JOIN last_sold_avg l ON sv.market_hash_name = l.market_hash_name
@@ -159,13 +174,10 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
 
   const rarityColor = RARITY_COLORS[skin.rarity_id] ?? '#888';
 
-  // Check if any prices are stale (>6 hours old)
+  // Check if any prices are stale (>6 hours old; no-listing rows use a 24h window)
   const hasStalePrice = variants.some((v) =>
     isPriceStale(v.updated_at, 6, v.lowest_price_cents, v.median_price_cents)
   );
-  const staleMarketHashNames = variants
-    .filter((v) => isPriceStale(v.updated_at, 6, v.lowest_price_cents, v.median_price_cents))
-    .map((v) => v.market_hash_name);
 
   // Get tradeup eligibility
   const tradeup = await getTradeupEligibility(id);
@@ -236,10 +248,7 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
                 Prices updated: {timeAgo(oldestUpdate)}
               </p>
             )}
-            <PriceRefreshButton
-              marketHashNames={staleMarketHashNames}
-              isStale={hasStalePrice}
-            />
+            <PriceRefreshButton key={id} skinId={id} isStale={hasStalePrice} />
           </div>
         </div>
 
@@ -385,6 +394,14 @@ function PriceCell({
         <div className="text-zinc-500">-</div>
       )}
       <div className="text-xs mt-0.5 space-x-1">
+        {hasLastSold && !hasListing && (
+          <span className="text-zinc-400">
+            {variant.last_sold_avg_cents != null && (variant.last_sold_sample_count ?? 0) > 1
+              ? `Avg of last ${variant.last_sold_sample_count} sales`
+              : 'Last sold'}
+            {formatSaleDate(variant.last_sale_at) ? ` · ${formatSaleDate(variant.last_sale_at)}` : ''}
+          </span>
+        )}
         {hasLastSold && hasListing && (
           <span className="text-zinc-400">Last sold: <ScrambleText text={formatPrice(lastSoldCents)} scrambleSpeed={20}delay={400}/></span>
         )}

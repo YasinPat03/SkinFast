@@ -1,20 +1,18 @@
 import sql from './db';
+import {
+  fetchSearchPage,
+  upsertPriceBatch,
+  SteamRateLimitError,
+  type SteamSearchResult,
+} from './scraper';
 
-const PRICE_OVERVIEW_URL = 'https://steamcommunity.com/market/priceoverview/';
 const MARKET_LISTING_URL = 'https://steamcommunity.com/market/listings/730/';
 const MAX_REQUESTS_PER_MINUTE = 20;
 const MIN_INTERVAL_MS = (60 / MAX_REQUESTS_PER_MINUTE) * 1000; // 3s between requests
 
 let lastRequestTime = 0;
 
-function parsePriceString(priceStr: string): number | null {
-  // Handles "$13.07", "€12.50", "£10.00", etc.
-  const cleaned = priceStr.replace(/[^0-9.,]/g, '').replace(',', '.');
-  const value = parseFloat(cleaned);
-  if (isNaN(value)) return null;
-  return Math.round(value * 100); // Convert to cents
-}
-
+// Per-instance spacer so every Steam request from this process is ≥3 s apart.
 async function throttle(): Promise<void> {
   const now = Date.now();
   const elapsed = now - lastRequestTime;
@@ -22,13 +20,6 @@ async function throttle(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, MIN_INTERVAL_MS - elapsed));
   }
   lastRequestTime = Date.now();
-}
-
-interface PriceOverviewResponse {
-  success: boolean;
-  lowest_price?: string;
-  median_price?: string;
-  volume?: string;
 }
 
 // Steam's internal currency IDs. 1=USD, 20=CAD, etc. The SSR'd page returns
@@ -95,18 +86,6 @@ function parseAllHistoriesFromHtml(html: string): Map<string, ParsedPriceHistory
   return result;
 }
 
-function parseHistoryFromHtml(html: string, marketHashName: string): ParsedPriceHistory | null {
-  return parseAllHistoriesFromHtml(html).get(marketHashName) ?? null;
-}
-
-function parseLatestSaleFromHistoryHtml(html: string, marketHashName: string): number | null {
-  const parsed = parseHistoryFromHtml(html, marketHashName);
-  if (!parsed || parsed.ecurrency !== STEAM_USD_CURRENCY_ID) return null;
-  const latest = parsed.prices[parsed.prices.length - 1];
-  if (!latest || !Number.isFinite(latest.price_median)) return null;
-  return Math.round(latest.price_median * 100);
-}
-
 // Walks the history backward, accumulating sales weighted by their bucket
 // `purchases` count, until we have at least 5 sales (or run out). Returns the
 // weighted average in cents.
@@ -136,92 +115,223 @@ function computeLastFiveAvg(
   };
 }
 
-async function fetchLatestSaleFromListingPage(marketHashName: string): Promise<number | null> {
-  const encodedName = encodeURIComponent(marketHashName);
-  const res = await fetch(`${MARKET_LISTING_URL}${encodedName}`, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  });
+// ---------------------------------------------------------------------------
+// On-demand refresh of one skin's listing prices via search/render.
+//
+// Steam's per-item `priceoverview` endpoint answers HTTP 429 to anonymous
+// callers (verified 2026-09-10), so on-demand refreshes go through
+// `search/render?query=<weapon> <pattern>` instead. One query returns every
+// currently listed variant of a skin (all wears, StatTrak, Souvenir) with
+// `sell_price` (USD cents) and `sell_listings` — the same fields the bulk
+// scraper stores. Steam caps the endpoint at 10 results per page; the largest
+// skin has 15 variants, so MAX_QUERY_PAGES × 10 covers a whole skin with room
+// for loose-match noise. Vanilla knives (query = weapon only) can exceed that
+// and simply come back with `complete: false`.
+// ---------------------------------------------------------------------------
+const MAX_QUERY_PAGES = 6;
 
-  if (!res.ok) {
-    console.warn(`HTTP ${res.status} fetching listing page for ${marketHashName}`);
-    return null;
-  }
+export type SkinRefreshStatus = 'ok' | 'no_results' | 'rate_limited' | 'error' | 'not_found';
 
-  const html = await res.text();
-  return parseLatestSaleFromHistoryHtml(html, marketHashName);
+export interface SkinRefreshResult {
+  status: SkinRefreshStatus;
+  query: string;
+  requested: string[];   // market_hash_names of this skin_id's variants
+  updated: string[];     // names actually upserted with a price (any tracked variant, siblings included)
+  missing: string[];     // requested names absent from a COMPLETE result set, now marked as "no listings"
+  last_sold_updated: string[]; // last_sold_avg rows refreshed for variants that have no active listing
+  complete: boolean;     // true if every result page was fetched (offset >= total_count)
+  results: Record<string, { lowest_price_cents: number; sell_listings: number } | null>;
 }
 
-export async function refreshSinglePrice(marketHashName: string): Promise<{
-  lowest_price_cents: number | null;
-  median_price_cents: number | null;
-  volume: number | null;
-} | null> {
-  await throttle();
+// "★ Karambit | Doppler" -> "Karambit Doppler"; vanilla "★ Navaja Knife" -> "Navaja Knife".
+// Steam returns zero results when '|', '★' or '™' appear in the query.
+export function buildSearchQuery(weaponName: string, patternName: string | null): string {
+  return [weaponName, patternName]
+    .filter((s): s is string => !!s && s.trim() !== '')
+    .join(' ')
+    .replace(/[|★™]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-  const params = new URLSearchParams({
-    appid: '730',
-    currency: '1', // USD
-    market_hash_name: marketHashName,
-  });
-
-  const res = await fetch(`${PRICE_OVERVIEW_URL}?${params}`, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Accept': 'application/json, text/plain, */*',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  });
-
-  if (res.status === 429) {
-    console.warn(`Rate limited fetching price for ${marketHashName}`);
-    return null;
-  }
-
-  if (!res.ok) {
-    console.warn(`HTTP ${res.status} fetching price for ${marketHashName}`);
-    return null;
-  }
-
-  const text = await res.text();
-  let data: PriceOverviewResponse;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    console.warn(`Invalid JSON for ${marketHashName}: ${text.slice(0, 200)}`);
-    return null;
-  }
-
-  if (!data.success) {
-    console.warn(`Steam returned success=false for ${marketHashName}`);
-    return null;
-  }
-
-  const lowest = data.lowest_price ? parsePriceString(data.lowest_price) : null;
-  let median = data.median_price ? parsePriceString(data.median_price) : null;
-  const volume = data.volume ? parseInt(data.volume.replace(',', ''), 10) : null;
-
-  // Some rare/unlisted items return success=true with no price fields from priceoverview,
-  // but the market listing page still embeds recent sale history we can fall back to.
-  if (lowest == null && median == null) {
-    median = await fetchLatestSaleFromListingPage(marketHashName);
-  }
-
-  // Upsert into database
+// Record that a tracked variant currently has no Steam listing. Touches only
+// lowest_price_cents / sell_listings / updated_at so median_price_cents and
+// volume survive, and so isPriceStale() stops flagging the row on every visit.
+async function markNoListings(names: string[]): Promise<void> {
+  if (names.length === 0) return;
+  const rows = names.map((market_hash_name) => ({
+    market_hash_name,
+    lowest_price_cents: null,
+    sell_listings: 0,
+  }));
   await sql`
-    INSERT INTO prices (market_hash_name, lowest_price_cents, median_price_cents, volume, sell_listings, updated_at)
-    VALUES (${marketHashName}, ${lowest}, ${median}, ${volume}, NULL, NOW())
+    INSERT INTO prices ${sql(rows, 'market_hash_name', 'lowest_price_cents', 'sell_listings')}
     ON CONFLICT (market_hash_name) DO UPDATE SET
-      lowest_price_cents = EXCLUDED.lowest_price_cents,
-      median_price_cents = EXCLUDED.median_price_cents,
-      volume = EXCLUDED.volume,
+      lowest_price_cents = NULL,
+      sell_listings = 0,
       updated_at = NOW()
   `;
+}
 
-  return { lowest_price_cents: lowest, median_price_cents: median, volume };
+// The skin page shows the last sold price for a variant with no active
+// listing, so a refresh also makes sure that data exists and is recent.
+const LAST_SOLD_RECHECK_HOURS = 24;   // matches the scrape-last-sold-avg cron's default
+const MAX_LAST_SOLD_FETCHES = 4;      // listing-page requests per refresh, ~3 s each
+
+async function namesWithStaleLastSold(names: string[]): Promise<string[]> {
+  if (names.length === 0) return [];
+  const fresh = await sql<{ market_hash_name: string }[]>`
+    SELECT market_hash_name FROM last_sold_avg
+    WHERE market_hash_name = ANY(${names})
+      AND updated_at > NOW() - (${LAST_SOLD_RECHECK_HOURS} || ' hours')::INTERVAL
+  `;
+  const freshSet = new Set(fresh.map((r) => r.market_hash_name));
+  return names.filter((n) => !freshSet.has(n));
+}
+
+// Refresh last_sold_avg for the requested variants that have no active
+// listing. Steam's listing page for a LISTED variant redirects to the skin's
+// group page, whose SSR state carries the sale history of every sibling
+// variant; an unlisted variant's page carries at most its own history, and a
+// never-sold one carries none. So go through a listed sibling first when one
+// exists, then fetch anything still uncovered one page at a time.
+async function refreshLastSoldForUnlisted(requested: string[], listed: string[]): Promise<string[]> {
+  const listedSet = new Set(listed);
+  const unlisted = requested.filter((n) => !listedSet.has(n));
+  let pending = await namesWithStaleLastSold(unlisted);
+  if (pending.length === 0) return [];
+
+  const written = new Set<string>();
+  let fetches = 0;
+
+  const anchor = requested.find((n) => listedSet.has(n));
+  if (anchor) {
+    const { written: w } = await refreshLastSoldAvgGroup(anchor);
+    fetches++;
+    // A listed anchor always yields at least its own row; an empty result
+    // means Steam rate-limited us or answered in a non-USD currency, and
+    // further requests would fail the same way.
+    if (w.length === 0) return [];
+    for (const n of w) written.add(n);
+    pending = pending.filter((n) => !written.has(n));
+  }
+
+  for (const name of pending) {
+    if (fetches >= MAX_LAST_SOLD_FETCHES) break;
+    const { written: w } = await refreshLastSoldAvgGroup(name);
+    fetches++;
+    // Even a never-sold variant yields its own sentinel row, so an empty
+    // result again means rate limiting or a non-USD answer: stop here.
+    if (w.length === 0) break;
+    for (const n of w) written.add(n);
+  }
+
+  return [...written];
+}
+
+export async function refreshSkinPrices(skinId: string): Promise<SkinRefreshResult> {
+  const skinRows = await sql<{ weapon_name: string; pattern_name: string | null }[]>`
+    SELECT weapon_name, pattern_name FROM skins WHERE id = ${skinId}
+  `;
+  const skin = skinRows[0];
+  if (!skin) {
+    return { status: 'not_found', query: '', requested: [], updated: [], missing: [], last_sold_updated: [], complete: false, results: {} };
+  }
+
+  const variantRows = await sql<{ market_hash_name: string }[]>`
+    SELECT market_hash_name FROM skin_variants WHERE skin_id = ${skinId}
+  `;
+  const requested = variantRows.map((r) => r.market_hash_name);
+  const query = buildSearchQuery(skin.weapon_name, skin.pattern_name);
+
+  const result: SkinRefreshResult = {
+    status: 'ok',
+    query,
+    requested,
+    updated: [],
+    missing: [],
+    last_sold_updated: [],
+    complete: false,
+    results: Object.fromEntries(requested.map((name) => [name, null])),
+  };
+
+  // Phase 1: paginate the search. On a 429 keep whatever pages already arrived.
+  const raw: SteamSearchResult[] = [];
+  let start = 0;
+  let totalCount: number | null = null;
+  try {
+    for (let page = 0; page < MAX_QUERY_PAGES; page++) {
+      await throttle();
+      const res = await fetchSearchPage(query, start);
+      raw.push(...res.results);
+      start += res.results.length;
+      totalCount = res.total_count;
+      if (res.results.length === 0 || start >= totalCount) break;
+    }
+    result.complete = totalCount !== null && start >= totalCount;
+  } catch (err) {
+    if (err instanceof SteamRateLimitError) {
+      result.status = 'rate_limited';
+    } else {
+      result.status = 'error';
+      console.warn(`refreshSkinPrices(${skinId}): query "${query}" failed: ${err}`);
+    }
+  }
+
+  // Phase 2: write. Search matching is loose ("Karambit Doppler" also returns
+  // Gamma Doppler items), so only names that exist in skin_variants are
+  // written — but ALL of those, not just this skin_id's, so sibling Doppler
+  // phases and same-pattern cousins get a free refresh.
+  try {
+    const names = [...new Set(raw.map((r) => r.hash_name).filter(Boolean))];
+    const tracked = names.length > 0
+      ? await sql<{ market_hash_name: string }[]>`
+          SELECT market_hash_name FROM skin_variants WHERE market_hash_name = ANY(${names})
+        `
+      : [];
+    const trackedSet = new Set(tracked.map((t) => t.market_hash_name));
+    const trackedResults = raw.filter((r) => trackedSet.has(r.hash_name));
+
+    result.updated = await upsertPriceBatch(trackedResults);
+
+    const latest = new Map<string, SteamSearchResult>();
+    for (const r of trackedResults) if (r.sell_price) latest.set(r.hash_name, r);
+    for (const name of result.updated) {
+      const r = latest.get(name);
+      if (r) result.results[name] = { lowest_price_cents: r.sell_price, sell_listings: r.sell_listings ?? 0 };
+    }
+
+    if (result.status === 'ok') {
+      if (result.updated.length === 0) {
+        // Nothing tracked came back: either the query matched nothing or Steam
+        // matched it differently than we expect. Never null rows on that basis.
+        result.status = 'no_results';
+      } else if (result.complete) {
+        // Every page was fetched and the skin was found, so a requested variant
+        // that is absent has no active listing right now.
+        const updatedSet = new Set(result.updated);
+        const missing = requested.filter((name) => !updatedSet.has(name));
+        await markNoListings(missing);
+        result.missing = missing;
+      }
+    }
+  } catch (err) {
+    result.status = 'error';
+    console.warn(`refreshSkinPrices(${skinId}): writing results for "${query}" failed: ${err}`);
+  }
+
+  // Phase 3: variants without an active listing fall back to their last sold
+  // price on the page, so refresh that for any of them whose data is stale.
+  // Skipped when Steam is already rate-limiting or the search itself failed.
+  if (result.status === 'ok' || result.status === 'no_results') {
+    try {
+      result.last_sold_updated = await refreshLastSoldForUnlisted(requested, result.updated);
+    } catch (err) {
+      console.warn(`refreshSkinPrices(${skinId}): last-sold refresh failed: ${err}`);
+    }
+  }
+
+  return result;
 }
 
 interface LastSoldAvgRow {
@@ -390,16 +500,20 @@ export async function runLastSoldAvgChunk(opts: {
   return { fetches, rowsWritten, withData, noData };
 }
 
-// Treat variants with no listing and no last-sold price as stale so they can be retried immediately.
+// A row that recorded "no listings" (both prices NULL) is re-checked on a
+// slower cadence than a priced row. Previously such rows were treated as stale
+// forever, so any skin with an unlisted Souvenir variant fired a refresh on
+// every visit that could never succeed.
+const NO_LISTING_RECHECK_HOURS = 24;
+
 export function isPriceStale(
-  updatedAt: string | null,
+  updatedAt: string | Date | null,
   maxAgeHours: number = 6,
   lowestPriceCents: number | null = null,
   medianPriceCents: number | null = null
 ): boolean {
-  if (lowestPriceCents == null && medianPriceCents == null) return true;
-  if (!updatedAt) return true;
-  const updated = new Date(updatedAt).getTime();
-  const now = Date.now();
-  return now - updated > maxAgeHours * 60 * 60 * 1000;
+  if (!updatedAt) return true; // never fetched
+  const hasPrice = lowestPriceCents != null || medianPriceCents != null;
+  const windowHours = hasPrice ? maxAgeHours : Math.max(maxAgeHours, NO_LISTING_RECHECK_HOURS);
+  return Date.now() - new Date(updatedAt).getTime() > windowHours * 60 * 60 * 1000;
 }
