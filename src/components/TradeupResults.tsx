@@ -25,6 +25,7 @@ interface TradeupGroupedInput {
   market_hash_name: string;
   image_url: string | null;
   quantity: number;
+  cannot_produce_target: boolean;
 }
 
 interface TradeupConcreteInput {
@@ -73,12 +74,20 @@ interface TradeupCombo {
   ev_cents: number;
   avg_normalized_float: number;
   float_source: FloatSource;
+  requires_specific_floats: boolean;
   all_outcomes: TradeupOutcome[];
   has_unlisted_outcomes: boolean;
   has_unpriced_outcomes: boolean;
 }
 
+interface RequestedWearInfo {
+  reachable: boolean;
+  output_float_range: [number, number] | null;
+  avg_normalized_range: [number, number] | null;
+}
+
 interface TradeupFinderResult {
+  requested_wear: RequestedWearInfo;
   target: {
     skin_id: string;
     skin_name: string;
@@ -99,6 +108,33 @@ function formatPrice(cents: number | null): string {
 }
 
 const WEAR_OPTIONS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
+
+// "StatTrak™ M4A4 | Bullet Rain (Battle-Scarred)"
+function describeVariant(skinName: string, wear: string, isStatTrak: boolean): string {
+  return `${isStatTrak ? 'StatTrak\u2122 ' : ''}${skinName} (${wear})`;
+}
+
+function withStatTrak(skinName: string, isStatTrak: boolean): string {
+  return isStatTrak ? `StatTrak\u2122 ${skinName}` : skinName;
+}
+
+function formatFloatRange(range: [number, number]): string {
+  return `${range[0].toFixed(3)}\u2013${range[1].toFixed(3)}`;
+}
+
+// Why no candidate lands the requested wear, in terms the float editor can act on.
+function describeUnreachableWear(info: RequestedWearInfo, wear: string): string {
+  if (!info.output_float_range || !info.avg_normalized_range) {
+    return `${wear} is outside this skin's float range, so no contract can produce it.`;
+  }
+  const [tLo, tHi] = info.avg_normalized_range;
+  const hint = tLo >= 0.5
+    ? ' (every input near the top of its own float range)'
+    : tHi <= 0.5
+      ? ' (every input near the bottom of its own float range)'
+      : '';
+  return `${wear} for this skin means an output float of ${formatFloatRange(info.output_float_range)}, which needs an average normalized input float of ${formatFloatRange(info.avg_normalized_range)}${hint}.`;
+}
 
 function pluralize(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`;
@@ -235,6 +271,36 @@ export default function TradeupResults({
 
       {result && (
         <div className="space-y-4">
+          <div className="text-sm text-zinc-300">
+            Results for <span className="font-medium text-white">{describeVariant(result.target.skin_name, result.target.wear, result.target.is_stattrak)}</span>
+            {!selectionMatchesResult && (
+              <span className="ml-2 text-amber-400">
+                Selection changed. Click Find Best Tradeup to search {describeVariant(skinName, wear, isStatTrak)}.
+              </span>
+            )}
+          </div>
+
+          {result.tradeups.length > 0 && !result.requested_wear.reachable && (
+            <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
+              <div className="font-medium">These results do not match your request.</div>
+              <p className="mt-1">
+                No realistic input combination is expected to land {describeVariant(result.target.skin_name, result.target.wear, result.target.is_stattrak)}.{' '}
+                {describeUnreachableWear(result.requested_wear, result.target.wear)}
+              </p>
+              <p className="mt-1">
+                Each option below is labelled with the wear it actually lands. They are ranked by how close they get
+                to {result.target.wear}, not by value; open an option&apos;s exact float editor to test specific items.
+              </p>
+            </div>
+          )}
+
+          {result.tradeups.length > 0 && result.tradeups.every((combo) => combo.has_unlisted_outcomes) && (
+            <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+              <span className="font-medium">Every option includes a possible outcome with no active Steam listing</span>{' '}
+              (marked in red below), so the EV figures may be skewed.
+            </div>
+          )}
+
           {result.tradeups.length === 0 ? (
             <p className="text-zinc-400 text-sm py-4">
               No tradeup combinations found. This may be because input skins do not have price data yet.
@@ -245,8 +311,8 @@ export default function TradeupResults({
                 key={combo.rank}
                 combo={combo}
                 skinId={skinId}
-                targetWear={wear}
-                isStatTrak={isStatTrak}
+                targetWear={result.target.wear}
+                isStatTrak={result.target.is_stattrak}
               />
             ))
           )}
@@ -273,8 +339,11 @@ function TradeupCard({
   const [floatInputs, setFloatInputs] = useState(() => combo.concrete_inputs.map((input) => input.input_float.toFixed(5)));
   const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [evaluating, setEvaluating] = useState(false);
-  const [floatEditorOpen, setFloatEditorOpen] = useState(!combo.target_matches_requested_wear);
+  const [floatEditorOpen, setFloatEditorOpen] = useState(
+    !combo.target_matches_requested_wear || combo.requires_specific_floats
+  );
   const evPositive = workingCombo.ev_cents >= 0;
+  const targetExpectedWear = workingCombo.all_outcomes.find((o) => o.is_target)?.expected_wear ?? 'a different wear';
   const unlistedOutcomeCount = workingCombo.all_outcomes.filter((o) => !o.has_active_listing).length;
   const unpricedOutcomeCount = workingCombo.all_outcomes.filter((o) => o.price_cents == null).length;
   const evSkewed = unlistedOutcomeCount > 0 || unpricedOutcomeCount > 0;
@@ -348,12 +417,25 @@ function TradeupCard({
         <div className="flex items-center gap-4">
           <span className="text-zinc-400 text-sm font-mono">#{combo.rank}</span>
           <div>
-            <span className="text-white font-medium">
-              <ScrambleText text={`${formatPrice(workingCombo.cost_per_attempt_cents)}${workingCombo.cost_per_attempt_cents != null ? ' for each hit' : ' requested target not hit'}`} scrambleSpeed={20} delay={400}/>
-            </span>
-            <span className="text-zinc-400 text-sm ml-2">
-              (<ScrambleText text={`${(workingCombo.probability * 100).toFixed(1)}%`} scrambleSpeed={20} delay={400}/> requested wear chance)
-            </span>
+            {workingCombo.target_matches_requested_wear ? (
+              <>
+                <span className="text-white font-medium">
+                  <ScrambleText text={`${formatPrice(workingCombo.cost_per_attempt_cents)} for each hit`} scrambleSpeed={20} delay={400}/>
+                </span>
+                <span className="text-zinc-400 text-sm ml-2">
+                  (<ScrambleText text={`${(workingCombo.probability * 100).toFixed(1)}%`} scrambleSpeed={20} delay={400}/> chance of {targetWear})
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="text-amber-400 font-medium">
+                  <ScrambleText text={`Lands ${targetExpectedWear}, not ${targetWear}`} scrambleSpeed={20} delay={400}/>
+                </span>
+                <span className="text-zinc-400 text-sm ml-2">
+                  (<ScrambleText text={`${(workingCombo.target_skin_probability * 100).toFixed(1)}%`} scrambleSpeed={20} delay={400}/> chance of the skin, 0% of {targetWear})
+                </span>
+              </>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-4">
@@ -380,8 +462,17 @@ function TradeupCard({
         <div className="px-4 pb-4 border-t border-zinc-700/50">
           {!workingCombo.target_matches_requested_wear && (
             <div className="mt-3 text-sm text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
-              With estimated floats, this tradeup lands in {workingCombo.all_outcomes.find((o) => o.is_target)?.expected_wear ?? 'a different wear'} instead of {targetWear}.
-              Use the float editor below to set exact low-float inputs to reach {targetWear}.
+              <span className="font-medium">This option does not land {targetWear}.</span>{' '}
+              With {workingCombo.float_source === 'exact' ? 'these exact' : 'estimated'} floats the target comes out {targetExpectedWear}.
+              Use the float editor below to enter the exact floats of specific items and see whether they reach {targetWear}.
+            </div>
+          )}
+          {workingCombo.requires_specific_floats && (
+            <div className="mt-3 text-sm text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
+              <span className="font-medium">Needs specific floats, not just any listing.</span>{' '}
+              This option lands {targetWear} only if each input&apos;s float is close to the value in the exact float editor
+              below (average normalized float {workingCombo.avg_normalized_float.toFixed(3)}). A typical listing of the
+              wears shown will land a different wear, so check each item&apos;s float before buying.
             </div>
           )}
           <div className="mt-3">
@@ -395,12 +486,21 @@ function TradeupCard({
                     <img src={input.image_url} alt={input.skin_name} className="w-10 h-7 object-contain flex-shrink-0" />
                   )}
                   <span className="text-zinc-300">
-                    <ScrambleText text={`${input.quantity}x ${input.skin_name}`} scrambleSpeed={20} delay={400}/>
+                    <ScrambleText text={`${input.quantity}x ${withStatTrak(input.skin_name, isStatTrak)}`} scrambleSpeed={20} delay={400}/>
                   </span>
                   <span className="text-zinc-400 text-xs">(<ScrambleText text={input.wear_name} scrambleSpeed={20} delay={400}/>)</span>
                   {input.is_souvenir && (
                     <span className="text-[10px] uppercase bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded">
                       souvenir
+                    </span>
+                  )}
+                  <span className="hidden sm:inline text-zinc-500 text-xs truncate min-w-0">{input.collection_name}</span>
+                  {input.cannot_produce_target && (
+                    <span
+                      className="text-[10px] uppercase bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded flex-shrink-0"
+                      title="This input's collection cannot produce the target. It is cheaper, but it lowers the target chance and adds its own collection's outcomes to the pool."
+                    >
+                      cannot roll target
                     </span>
                   )}
                   <span className="ml-auto text-zinc-400">
@@ -449,7 +549,7 @@ function TradeupCard({
                 >
                   <span className="text-xs text-zinc-400 w-6">#{input.slot}</span>
                   <div className="min-w-0 flex-1">
-                    <div className="text-sm text-zinc-300 truncate">{input.skin_name}</div>
+                    <div className="text-sm text-zinc-300 truncate">{withStatTrak(input.skin_name, isStatTrak)}</div>
                     <div className="text-xs text-zinc-400">
                       {input.is_souvenir ? 'Souvenir · ' : ''}{input.wear_name} · range {input.min_float.toFixed(2)}-{input.max_float.toFixed(2)}
                     </div>
@@ -523,7 +623,7 @@ function TradeupCard({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className={outcome.is_target ? 'text-green-400 font-medium' : 'text-zinc-300'}>
-                        <ScrambleText text={outcome.skin_name} scrambleSpeed={20} delay={400}/>
+                        <ScrambleText text={withStatTrak(outcome.skin_name, isStatTrak)} scrambleSpeed={20} delay={400}/>
                       </span>
                       <span className="text-[10px] text-zinc-300 px-1.5 py-0.5 rounded bg-zinc-700/50">
                         <ScrambleText text={outcome.expected_wear} scrambleSpeed={20} delay={400}/>

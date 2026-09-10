@@ -114,6 +114,9 @@ export interface TradeupGroupedInput {
   market_hash_name: string;
   image_url: string | null;
   quantity: number;
+  // True when this input's collection cannot produce the target: a cheaper "filler" that
+  // lowers the target chance and adds its own collection's outcomes to the pool.
+  cannot_produce_target: boolean;
 }
 
 export interface TradeupOutcomeEvaluation {
@@ -143,6 +146,10 @@ export interface TradeupCombo {
   ev_cents: number;
   avg_normalized_float: number;
   float_source: FloatSource;
+  // True when the estimated input floats had to be moved away from the typical float of each
+  // input's wear to land the requested wear: any listing of that wear will NOT do, the user
+  // has to pick items whose floats are close to the ones in concrete_inputs.
+  requires_specific_floats: boolean;
   all_outcomes: TradeupOutcomeEvaluation[];
   // At least one outcome's expected variant has no active Steam listing.
   has_unlisted_outcomes: boolean;
@@ -160,7 +167,19 @@ export interface ExactTradeupInput {
   input_float: number;
 }
 
+// How the requested wear translates into float requirements, and whether any candidate
+// combination is expected to satisfy them with wear-midpoint float estimates.
+export interface RequestedWearInfo {
+  reachable: boolean;
+  // The requested wear's float window clamped to the target skin's float range, or null when
+  // the skin cannot exist in that wear at all.
+  output_float_range: [number, number] | null;
+  // The average normalized input float the contract needs to land inside that window.
+  avg_normalized_range: [number, number] | null;
+}
+
 export interface TradeupFinderResult {
+  requested_wear: RequestedWearInfo;
   target: {
     skin_id: string;
     skin_name: string;
@@ -312,7 +331,8 @@ export async function findBestTradeup(
   // Prefer combos where estimated wear matches, but fall back to all combos
   // (e.g. Factory New gloves need very low float inputs that midpoint estimates can't capture)
   const wearMatching = uniqueCombos.filter((c) => c.target_matches_requested_wear);
-  const wearPool = wearMatching.length > 0 ? wearMatching : uniqueCombos;
+  const requestedWear = describeRequestedWear(targetWear, targetSkin.min_float, targetSkin.max_float, wearMatching.length > 0);
+  const wearPool = requestedWear.reachable ? wearMatching : uniqueCombos;
 
   // Never pick a combo that drags in an outcome without an active listing (typically a filler
   // collection whose outputs are not on the market) when a fully listed alternative exists.
@@ -321,10 +341,20 @@ export async function findBestTradeup(
   const fullyListed = wearPool.filter((c) => !c.has_unlisted_outcomes);
   const ranked = fullyListed.length > 0 ? fullyListed : wearPool;
 
-  ranked.sort((a, b) => b.ev_cents - a.ev_cents);
+  if (requestedWear.reachable) {
+    ranked.sort((a, b) => b.ev_cents - a.ev_cents);
+  } else {
+    // Nothing is expected to land the requested wear, so each combo's EV values the target at
+    // some other wear and says nothing about the request. Surface the combos whose expected
+    // target float gets closest to the requested window instead, so the user sees what it
+    // would take and the exact-float editor starts from a realistic point.
+    const distance = (combo: TradeupCombo) => distanceToFloatWindow(combo, requestedWear.output_float_range);
+    ranked.sort((a, b) => distance(a) - distance(b) || b.ev_cents - a.ev_cents);
+  }
   const top5 = ranked.slice(0, 5).map((c, i) => ({ ...c, rank: i + 1 }));
 
   return {
+    requested_wear: requestedWear,
     target: {
       skin_id: targetSkinId,
       skin_name: targetSkin.name,
@@ -340,6 +370,43 @@ export async function findBestTradeup(
     },
     tradeups: top5,
   };
+}
+
+function describeRequestedWear(
+  targetWear: string,
+  minFloat: number,
+  maxFloat: number,
+  reachable: boolean
+): RequestedWearInfo {
+  const range = WEAR_FLOAT_RANGES[targetWear];
+  if (!range || maxFloat <= minFloat) {
+    return { reachable, output_float_range: null, avg_normalized_range: null };
+  }
+
+  const lo = Math.max(range[0], minFloat);
+  const hi = Math.min(range[1], maxFloat);
+  if (lo >= hi) {
+    return { reachable, output_float_range: null, avg_normalized_range: null };
+  }
+
+  const round = (value: number) => Math.round(value * 100000) / 100000;
+  return {
+    reachable,
+    output_float_range: [round(lo), round(hi)],
+    avg_normalized_range: [
+      round(calculateTFloat(lo, minFloat, maxFloat)),
+      round(calculateTFloat(hi, minFloat, maxFloat)),
+    ],
+  };
+}
+
+// How far the combo's expected target float sits outside the requested wear window (0 = inside).
+function distanceToFloatWindow(combo: TradeupCombo, window: [number, number] | null): number {
+  const expected = combo.all_outcomes.find((outcome) => outcome.is_target)?.expected_float;
+  if (expected == null || !window) return Infinity;
+  if (expected < window[0]) return window[0] - expected;
+  if (expected >= window[1]) return expected - window[1];
+  return 0;
 }
 
 // ── Wear Variant Generation ───────────────────────────────────────
@@ -579,7 +646,13 @@ function optimizeForTargetAvgT(
 
   let avgT = calculateAvgTFloat(slots);
 
-  if (avgT <= targetAvgT) return { slots: slots.map((s) => ({ ...s })), avgTFloat: avgT };
+  // The cheapest wears usually sit above the goal (high floats are cheap), but a Well-Worn or
+  // Battle-Scarred request, or inputs whose cheapest listing is a low wear, put the goal above
+  // them. Walk in whichever direction the goal lies.
+  const direction = avgT > targetAvgT ? -1 : 1;
+  const reached = () => (direction < 0 ? avgT <= targetAvgT : avgT >= targetAvgT);
+
+  if (reached()) return { slots: slots.map((s) => ({ ...s })), avgTFloat: avgT };
 
   const maxIterations = inputSlots.length * 5;
   for (let iter = 0; iter < maxIterations; iter++) {
@@ -594,7 +667,8 @@ function optimizeForTargetAvgT(
       for (let j = 0; j < slot.candidate.wear_options.length; j++) {
         if (j === slot.wearIdx) continue;
         const newWear = slot.candidate.wear_options[j];
-        const deltaT = currentWear.t_float - newWear.t_float;
+        // Positive when the swap moves the average toward the goal.
+        const deltaT = (newWear.t_float - currentWear.t_float) * direction;
         if (deltaT <= 0) continue;
 
         const deltaCost = newWear.price_cents - currentWear.price_cents;
@@ -621,10 +695,10 @@ function optimizeForTargetAvgT(
     slots[bestSlotIdx] = { ...slots[bestSlotIdx], wearIdx: bestNewWearIdx };
     avgT = calculateAvgTFloat(slots);
 
-    if (avgT <= targetAvgT) break;
+    if (reached()) break;
   }
 
-  if (avgT > targetAvgT + 0.02) return null;
+  if (!reached() && Math.abs(avgT - targetAvgT) > 0.02) return null;
 
   return { slots: slots.map((s) => ({ ...s })), avgTFloat: avgT };
 }
@@ -769,6 +843,18 @@ function evaluateResolvedTradeup(
   const targetSkinProb = outcomeProbs.get(resolvedTargetId) ?? 0;
   if (targetSkinProb === 0) return null;
 
+  // Collections (or cases) that can actually roll the target; inputs from anywhere else are fillers.
+  const targetCollectionIds = new Set(
+    outputSkins
+      .filter((output) => output.skin_id === resolvedTargetId || output.alias_skin_ids.includes(targetSkinId))
+      .map((output) => output.collection_id)
+  );
+
+  const requiresSpecificFloats = resolvedInputs.some((input) =>
+    input.float_source === 'wear_assumption'
+    && Math.abs(input.input_float - estimateFloat(input.wear_name, input.min_float, input.max_float)) > 1e-6
+  );
+
   const targetOutputFloat = targetOutput
     ? calculateOutputFloat(avgNormalizedFloat, targetOutput.min_float, targetOutput.max_float)
     : null;
@@ -841,6 +927,7 @@ function evaluateResolvedTradeup(
         market_hash_name: input.market_hash_name,
         image_url: input.image_url,
         quantity: 1,
+        cannot_produce_target: !targetCollectionIds.has(input.collection_id),
       });
     }
   }
@@ -865,6 +952,7 @@ function evaluateResolvedTradeup(
     ev_cents: Math.round(ev),
     avg_normalized_float: Math.round(avgNormalizedFloat * 100000) / 100000,
     float_source: floatSource,
+    requires_specific_floats: requiresSpecificFloats,
     all_outcomes: allOutcomes,
     has_unlisted_outcomes: anyUnlisted,
     has_unpriced_outcomes: anyUnpriced,
