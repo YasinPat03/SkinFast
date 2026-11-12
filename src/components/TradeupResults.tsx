@@ -9,131 +9,60 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-
-type FloatSource = 'wear_assumption' | 'exact';
-
-interface TradeupGroupedInput {
-  skin_id: string;
-  skin_name: string;
-  weapon_name: string;
-  wear_name: string;
-  price_cents: number;
-  is_last_sold_price: boolean;
-  is_souvenir: boolean;
-  collection_id: string;
-  collection_name: string;
-  market_hash_name: string;
-  image_url: string | null;
-  quantity: number;
-  cannot_produce_target: boolean;
-}
-
-interface TradeupConcreteInput {
-  slot: number;
-  skin_id: string;
-  skin_name: string;
-  weapon_name: string;
-  wear_name: string;
-  price_cents: number;
-  is_last_sold_price: boolean;
-  is_souvenir: boolean;
-  collection_id: string;
-  collection_name: string;
-  market_hash_name: string;
-  image_url: string | null;
-  min_float: number;
-  max_float: number;
-  input_float: number;
-  normalized_float: number;
-  float_source: FloatSource;
-}
-
-interface TradeupOutcome {
-  skin_id: string;
-  skin_name: string;
-  weapon_name: string;
-  probability: number;
-  price_cents: number | null;
-  image_url: string | null;
-  is_target: boolean;
-  is_last_sold_price: boolean;
-  has_active_listing: boolean;
-  expected_float: number;
-  expected_wear: string;
-}
-
-interface TradeupCombo {
-  rank: number;
-  inputs: TradeupGroupedInput[];
-  concrete_inputs: TradeupConcreteInput[];
-  total_cost_cents: number;
-  probability: number;
-  target_skin_probability: number;
-  target_matches_requested_wear: boolean;
-  cost_per_attempt_cents: number | null;
-  ev_cents: number;
-  avg_normalized_float: number;
-  float_source: FloatSource;
-  requires_specific_floats: boolean;
-  all_outcomes: TradeupOutcome[];
-  has_unlisted_outcomes: boolean;
-  has_unpriced_outcomes: boolean;
-}
-
-interface RequestedWearInfo {
-  reachable: boolean;
-  output_float_range: [number, number] | null;
-  avg_normalized_range: [number, number] | null;
-}
-
-interface TradeupFinderResult {
-  requested_wear: RequestedWearInfo;
-  target: {
-    skin_id: string;
-    skin_name: string;
-    weapon_name: string;
-    wear: string;
-    is_stattrak: boolean;
-    price_cents: number | null;
-    has_active_listing: boolean;
-    last_sold_cents: number | null;
-    image_url: string | null;
-  };
-  tradeups: TradeupCombo[];
-}
+import type {
+  RequestedWearInfo,
+  TradeupCombo,
+  TradeupConcreteInput,
+  TradeupFinderResult,
+  TradeupOutcomeEvaluation,
+  TradeupSort,
+} from '@/lib/tradeup/types';
 
 function formatPrice(cents: number | null): string {
   if (cents == null) return '-';
-  return `$${(cents / 100).toFixed(2)}`;
+  const sign = cents < 0 ? '-' : '';
+  return `${sign}$${(Math.abs(cents) / 100).toFixed(2)}`;
 }
 
-const WEAR_OPTIONS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
+function formatSigned(cents: number): string {
+  return `${cents >= 0 ? '+' : ''}${formatPrice(cents)}`;
+}
+
+const WEAR_OPTIONS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred', 'Vanilla'];
+
+const SORT_LABEL: Record<TradeupSort, string> = {
+  cost_per_hit: 'Cheapest per hit',
+  ev: 'Best EV',
+};
 
 // "StatTrak™ M4A4 | Bullet Rain (Battle-Scarred)"
 function describeVariant(skinName: string, wear: string, isStatTrak: boolean): string {
-  return `${isStatTrak ? 'StatTrak\u2122 ' : ''}${skinName} (${wear})`;
+  const name = isStatTrak ? skinName.replace(/^(★ )?/, '$1StatTrak™ ') : skinName;
+  return wear === 'Vanilla' ? name : `${name} (${wear})`;
 }
 
 function withStatTrak(skinName: string, isStatTrak: boolean): string {
-  return isStatTrak ? `StatTrak\u2122 ${skinName}` : skinName;
+  return isStatTrak ? skinName.replace(/^(★ )?/, '$1StatTrak™ ') : skinName;
 }
 
-function formatFloatRange(range: [number, number]): string {
-  return `${range[0].toFixed(3)}\u2013${range[1].toFixed(3)}`;
+function formatRange(range: [number, number], digits = 3): string {
+  return `${range[0].toFixed(digits)}–${range[1].toFixed(digits)}`;
 }
 
-// Why no candidate lands the requested wear, in terms the float editor can act on.
-function describeUnreachableWear(info: RequestedWearInfo, wear: string): string {
-  if (!info.output_float_range || !info.avg_normalized_range) {
+// What the requested wear demands of the inputs, in terms the float editor can act on.
+function describeRequirement(info: RequestedWearInfo, wear: string): string {
+  if (!info.avg_normalized_range) {
     return `${wear} is outside this skin's float range, so no contract can produce it.`;
   }
-  const [tLo, tHi] = info.avg_normalized_range;
-  const hint = tLo >= 0.5
-    ? ' (every input near the top of its own float range)'
-    : tHi <= 0.5
-      ? ' (every input near the bottom of its own float range)'
-      : '';
-  return `${wear} for this skin means an output float of ${formatFloatRange(info.output_float_range)}, which needs an average normalized input float of ${formatFloatRange(info.avg_normalized_range)}${hint}.`;
+  if (!info.output_float_range) return '';
+  const [lo, hi] = info.avg_normalized_range;
+  const hint =
+    lo >= 0.5
+      ? ' (every input near the top of its own float range)'
+      : hi <= 0.5
+        ? ' (every input near the bottom of its own float range)'
+        : '';
+  return `${wear} for this skin means an output float of ${formatRange(info.output_float_range)}, which needs an average normalized input float of ${formatRange(info.avg_normalized_range)}${hint}.`;
 }
 
 function pluralize(count: number, noun: string): string {
@@ -146,6 +75,18 @@ function describeSkew(unlisted: number, unpriced: number): string {
   if (unlisted > 0) parts.push(`${pluralize(unlisted, 'outcome')} ${unlisted === 1 ? 'has' : 'have'} no active listing`);
   if (unpriced > 0) parts.push(`${pluralize(unpriced, 'outcome')} ${unpriced === 1 ? 'has' : 'have'} no recorded sales (counted as $0)`);
   return parts.join(' and ');
+}
+
+// A last sale this old means the "last 5 sold" figure may not reflect today's market.
+const OLD_SALE_DAYS = 30;
+
+function saleAge(iso: string | null): { days: number; label: string } | null {
+  if (!iso) return null;
+  const time = new Date(iso).getTime();
+  if (Number.isNaN(time)) return null;
+  const days = Math.floor((Date.now() - time) / 86_400_000);
+  const label = new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+  return { days, label };
 }
 
 export default function TradeupResults({
@@ -165,16 +106,19 @@ export default function TradeupResults({
     return WEAR_OPTIONS.find((w) => availableWears.includes(w)) ?? availableWears[0] ?? 'Factory New';
   });
   const [isStatTrak, setIsStatTrak] = useState(false);
+  const [sort, setSort] = useState<TradeupSort>('cost_per_hit');
   const [result, setResult] = useState<TradeupFinderResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Does the requested target variant have an active listing? The API answer is fresher, so
   // prefer it whenever it was computed for the current wear/StatTrak selection.
-  const selectionMatchesResult = result != null && result.target.wear === wear && result.target.is_stattrak === isStatTrak;
-  const targetWearListed = selectionMatchesResult
-    ? result.target.has_active_listing
-    : (isStatTrak ? listedWears.stattrak : listedWears.normal).includes(wear);
+  const selectionMatchesResult =
+    result != null && result.target.wear === wear && result.target.is_stattrak === isStatTrak && result.sort === sort;
+  const targetWearListed =
+    result != null && result.target.wear === wear && result.target.is_stattrak === isStatTrak
+      ? result.target.has_active_listing
+      : (isStatTrak ? listedWears.stattrak : listedWears.normal).includes(wear);
 
   async function fetchTradeups() {
     setLoading(true);
@@ -185,6 +129,7 @@ export default function TradeupResults({
         skin_id: skinId,
         wear,
         stattrak: isStatTrak.toString(),
+        sort,
       });
       const res = await fetch(`/api/tradeup/best?${params}`);
       const data = await res.json();
@@ -200,6 +145,10 @@ export default function TradeupResults({
     }
   }
 
+  const anyFloat = result?.tradeups.filter((combo) => combo.float_fit === 'any') ?? [];
+  const specific = result?.tradeups.filter((combo) => combo.float_fit === 'specific') ?? [];
+  const misses = result?.tradeups.filter((combo) => combo.float_fit === 'miss') ?? [];
+
   return (
     <div>
       <div className="flex flex-wrap items-center gap-4 mb-4">
@@ -211,8 +160,21 @@ export default function TradeupResults({
             </SelectTrigger>
             <SelectContent position="item-aligned">
               {WEAR_OPTIONS.filter((option) => availableWears.includes(option)).map((option) => (
-                <SelectItem key={option} value={option}>{option}</SelectItem>
+                <SelectItem key={option} value={option}>{option === 'Vanilla' ? 'Vanilla (no exterior)' : option}</SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-zinc-400">Rank by:</label>
+          <Select value={sort} onValueChange={(value) => setSort(value as TradeupSort)}>
+            <SelectTrigger className="border-zinc-700 bg-zinc-800 text-white hover:bg-zinc-700">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="item-aligned">
+              <SelectItem value="cost_per_hit">{SORT_LABEL.cost_per_hit}</SelectItem>
+              <SelectItem value="ev">{SORT_LABEL.ev}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -242,14 +204,15 @@ export default function TradeupResults({
       <div className="mb-4 rounded border border-zinc-700 bg-zinc-800/40 px-3 py-2 text-xs leading-5 text-zinc-400">
         <span className="font-medium text-zinc-300">Pricing disclaimer:</span> input prices are the lowest active Steam Community
         Market listing, and only skins with an active listing are ever used as inputs. Outcome prices are the average of the
-        last 5 recorded Steam sales for the exact wear the contract is expected to produce, not a live listing. EV and
-        cost-per-hit figures are estimates; Steam fees, float rolls, and price movement will change what you actually pay and receive.
+        last 5 recorded Steam sales for the exact wear the contract is expected to produce, not a live listing. A listing
+        shows a wear, not a float, so each option says whether it works with any float or only with specific ones; the lowest
+        listing may not have a float that qualifies. EV and cost-per-hit figures are estimates before Steam fees.
       </div>
 
       {!targetWearListed && (
         <div className="mb-4 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400">
           <span className="font-medium">
-            No active Steam listing for {skinName} ({isStatTrak ? 'StatTrak ' : ''}{wear}).
+            No active Steam listing for {describeVariant(skinName, wear, isStatTrak)}.
           </span>{' '}
           There is no live listed price for this target, so its outcome value relies on past sales only and the prices,
           EV, and cost-per-hit shown may be skewed.
@@ -273,9 +236,13 @@ export default function TradeupResults({
         <div className="space-y-4">
           <div className="text-sm text-zinc-300">
             Results for <span className="font-medium text-white">{describeVariant(result.target.skin_name, result.target.wear, result.target.is_stattrak)}</span>
+            <span className="text-zinc-400">
+              , ranked by {result.requested_wear.reachable ? SORT_LABEL[result.sort].toLowerCase() : `how close they get to ${result.target.wear}`}
+              {' '}({result.combinations_checked.toLocaleString()} input combinations checked)
+            </span>
             {!selectionMatchesResult && (
               <span className="ml-2 text-amber-400">
-                Selection changed. Click Find Best Tradeup to search {describeVariant(skinName, wear, isStatTrak)}.
+                Selection changed. Click Find Best Tradeup to search {describeVariant(skinName, wear, isStatTrak)} by {SORT_LABEL[sort].toLowerCase()}.
               </span>
             )}
           </div>
@@ -284,12 +251,23 @@ export default function TradeupResults({
             <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
               <div className="font-medium">These results do not match your request.</div>
               <p className="mt-1">
-                No realistic input combination is expected to land {describeVariant(result.target.skin_name, result.target.wear, result.target.is_stattrak)}.{' '}
-                {describeUnreachableWear(result.requested_wear, result.target.wear)}
+                No combination of currently listed inputs can land {describeVariant(result.target.skin_name, result.target.wear, result.target.is_stattrak)},
+                whatever their floats. {describeRequirement(result.requested_wear, result.target.wear)}
               </p>
               <p className="mt-1">
                 Each option below is labelled with the wear it actually lands. They are ranked by how close they get
-                to {result.target.wear}, not by value; open an option&apos;s exact float editor to test specific items.
+                to {result.target.wear}, not by value.
+              </p>
+            </div>
+          )}
+
+          {result.requested_wear.reachable && !result.requested_wear.any_float_option && (
+            <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
+              <div className="font-medium">Every option below needs specific input floats.</div>
+              <p className="mt-1">
+                No combination of currently listed wears lands {result.target.wear} with just any float.{' '}
+                {describeRequirement(result.requested_wear, result.target.wear)} Each option states the floats it
+                needs; the lowest listing may not qualify, and items that do can cost more than the price shown.
               </p>
             </div>
           )}
@@ -303,22 +281,74 @@ export default function TradeupResults({
 
           {result.tradeups.length === 0 ? (
             <p className="text-zinc-400 text-sm py-4">
-              No tradeup combinations found. This may be because input skins do not have price data yet.
+              No tradeup combinations found for this request.
             </p>
           ) : (
-            result.tradeups.map((combo) => (
-              <TradeupCard
-                key={combo.rank}
-                combo={combo}
-                skinId={skinId}
-                targetWear={result.target.wear}
-                isStatTrak={result.target.is_stattrak}
-              />
-            ))
+            <>
+              {anyFloat.length > 0 && (
+                <ComboSection
+                  title="Works with any float"
+                  note={`Every float these input wears can have lands ${result.target.wear}, so any listing of the wears shown will do.`}
+                  combos={anyFloat}
+                  result={result}
+                  skinId={skinId}
+                />
+              )}
+              {specific.length > 0 && (
+                <ComboSection
+                  title={anyFloat.length > 0 ? `${result.sort === 'ev' ? 'Higher EV' : 'Cheaper per hit'}, but needs specific floats` : 'Needs specific floats'}
+                  note={`These land ${result.target.wear} only when the inputs' floats fall in the range each option states. Check floats before buying. Combinations that work for only a sliver of the floats their wears can have are left out as impractical.`}
+                  combos={specific}
+                  result={result}
+                  skinId={skinId}
+                />
+              )}
+              {misses.length > 0 && (
+                <ComboSection
+                  title={`Closest available (does not land ${result.target.wear})`}
+                  note={null}
+                  combos={misses}
+                  result={result}
+                  skinId={skinId}
+                />
+              )}
+            </>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+function ComboSection({
+  title,
+  note,
+  combos,
+  result,
+  skinId,
+}: {
+  title: string;
+  note: string | null;
+  combos: TradeupCombo[];
+  result: TradeupFinderResult;
+  skinId: string;
+}) {
+  return (
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold text-white">{title}</h3>
+        {note && <p className="text-xs text-zinc-400 mt-0.5">{note}</p>}
+      </div>
+      {combos.map((combo) => (
+        <TradeupCard
+          key={combo.rank}
+          combo={combo}
+          skinId={skinId}
+          targetWear={result.target.wear}
+          isStatTrak={result.target.is_stattrak}
+        />
+      ))}
+    </section>
   );
 }
 
@@ -339,14 +369,15 @@ function TradeupCard({
   const [floatInputs, setFloatInputs] = useState(() => combo.concrete_inputs.map((input) => input.input_float.toFixed(5)));
   const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [evaluating, setEvaluating] = useState(false);
-  const [floatEditorOpen, setFloatEditorOpen] = useState(
-    !combo.target_matches_requested_wear || combo.requires_specific_floats
-  );
+  const [floatEditorOpen, setFloatEditorOpen] = useState(combo.float_fit !== 'any');
   const evPositive = workingCombo.ev_cents >= 0;
   const targetExpectedWear = workingCombo.all_outcomes.find((o) => o.is_target)?.expected_wear ?? 'a different wear';
-  const unlistedOutcomeCount = workingCombo.all_outcomes.filter((o) => !o.has_active_listing).length;
-  const unpricedOutcomeCount = workingCombo.all_outcomes.filter((o) => o.price_cents == null).length;
+  const unlistedOutcomeCount = workingCombo.all_outcomes.filter((o) => o.unlisted_wears.length > 0).length;
+  const unpricedOutcomeCount = workingCombo.all_outcomes.filter((o) => o.unpriced_wears.length > 0).length;
   const evSkewed = unlistedOutcomeCount > 0 || unpricedOutcomeCount > 0;
+  const evVaries = workingCombo.ev_range_cents[0] !== workingCombo.ev_range_cents[1];
+  const lands = workingCombo.target_matches_requested_wear;
+  const exact = workingCombo.float_source === 'exact';
 
   useEffect(() => {
     setWorkingCombo(combo);
@@ -382,7 +413,6 @@ function TradeupCard({
             skin_id: input.skin_id,
             collection_id: input.collection_id,
             market_hash_name: input.market_hash_name,
-            wear_name: input.wear_name,
             input_float: parsedFloats[index],
           })),
         }),
@@ -417,14 +447,19 @@ function TradeupCard({
         <div className="flex items-center gap-4">
           <span className="text-zinc-400 text-sm font-mono">#{combo.rank}</span>
           <div>
-            {workingCombo.target_matches_requested_wear ? (
+            {lands ? (
               <>
                 <span className="text-white font-medium">
                   <ScrambleText text={`${formatPrice(workingCombo.cost_per_attempt_cents)} for each hit`} scrambleSpeed={20} delay={400}/>
                 </span>
                 <span className="text-zinc-400 text-sm ml-2">
-                  (<ScrambleText text={`${(workingCombo.probability * 100).toFixed(1)}%`} scrambleSpeed={20} delay={400}/> chance of {targetWear})
+                  (<ScrambleText text={`${(workingCombo.probability * 100).toFixed(1)}%`} scrambleSpeed={20} delay={400}/> chance of {targetWear === 'Vanilla' ? 'the knife' : targetWear})
                 </span>
+                {workingCombo.requires_specific_floats && (
+                  <span className="ml-2 text-[10px] uppercase bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded align-middle">
+                    needs specific floats
+                  </span>
+                )}
               </>
             ) : (
               <>
@@ -441,38 +476,50 @@ function TradeupCard({
         <div className="flex items-center gap-4">
           <span
             className={`text-sm font-medium relative ${evPositive ? 'text-green-400' : 'text-red-400'}`}
-            onMouseEnter={() => evSkewed && setShowEvTooltip(true)}
+            onMouseEnter={() => (evSkewed || evVaries) && setShowEvTooltip(true)}
             onMouseLeave={() => setShowEvTooltip(false)}
           >
-            EV: <ScrambleText text={`${evPositive ? '+' : ''}${formatPrice(workingCombo.ev_cents)}`} scrambleSpeed={20} delay={400}/>
+            EV: <ScrambleText text={formatSigned(workingCombo.ev_cents)} scrambleSpeed={20} delay={400}/>
             {evSkewed && <span className="text-red-400">*</span>}
             {showEvTooltip && (
               <span className="absolute top-full right-0 mt-2 w-max max-w-xs px-3 py-2 text-xs text-zinc-200 bg-zinc-900 border border-zinc-600 rounded-lg shadow-lg z-50 font-normal text-left pointer-events-none">
-                EV may be skewed: {describeSkew(unlistedOutcomeCount, unpricedOutcomeCount)}.
+                {evVaries && (
+                  <span className="block">
+                    Depends on the input floats: between {formatSigned(workingCombo.ev_range_cents[0])} and {formatSigned(workingCombo.ev_range_cents[1])}.
+                  </span>
+                )}
+                {evSkewed && <span className="block">EV may be skewed: {describeSkew(unlistedOutcomeCount, unpricedOutcomeCount)}.</span>}
               </span>
             )}
           </span>
           <span className="text-zinc-500 text-sm">
-            {expanded ? '\u25B2' : '\u25BC'}
+            {expanded ? '▲' : '▼'}
           </span>
         </div>
       </button>
 
       {expanded && (
         <div className="px-4 pb-4 border-t border-zinc-700/50">
-          {!workingCombo.target_matches_requested_wear && (
+          {!lands && (
             <div className="mt-3 text-sm text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
               <span className="font-medium">This option does not land {targetWear}.</span>{' '}
-              With {workingCombo.float_source === 'exact' ? 'these exact' : 'estimated'} floats the target comes out {targetExpectedWear}.
-              Use the float editor below to enter the exact floats of specific items and see whether they reach {targetWear}.
+              {exact
+                ? `With these exact floats the target comes out ${targetExpectedWear}.`
+                : `The input wears shown can only produce an average normalized float of ${formatRange(workingCombo.possible_avg_normalized)}, which makes the target ${targetExpectedWear} at best.`}
             </div>
           )}
-          {workingCombo.requires_specific_floats && (
+          {lands && workingCombo.requires_specific_floats && workingCombo.required_avg_normalized && (
             <div className="mt-3 text-sm text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
               <span className="font-medium">Needs specific floats, not just any listing.</span>{' '}
-              This option lands {targetWear} only if each input&apos;s float is close to the value in the exact float editor
-              below (average normalized float {workingCombo.avg_normalized_float.toFixed(3)}). A typical listing of the
-              wears shown will land a different wear, so check each item&apos;s float before buying.
+              This lands {targetWear} only when the inputs&apos; average normalized float is between{' '}
+              {formatRange(workingCombo.required_avg_normalized)}. The wears shown can produce {formatRange(workingCombo.possible_avg_normalized)},
+              so about {Math.round(workingCombo.float_tolerance * 100)}% of the floats they can have work. The float editor below is
+              filled with one set of floats that does; the lowest listing may not have such a float, and items that do can cost more.
+            </div>
+          )}
+          {lands && !exact && workingCombo.float_fit === 'any' && (
+            <div className="mt-3 text-sm text-green-400/90 bg-green-500/10 border border-green-500/20 rounded px-3 py-2">
+              Any listing of the wears below works: every float they can have lands {targetWear}.
             </div>
           )}
           <div className="mt-3">
@@ -481,7 +528,7 @@ function TradeupCard({
             </h4>
             <div className="space-y-1.5">
               {workingCombo.inputs.map((input, index) => (
-                <div key={`${input.skin_id}:${input.collection_id}:${index}`} className="flex items-center gap-3 text-sm">
+                <div key={`${input.market_hash_name}:${input.collection_id}:${index}`} className="flex items-center gap-3 text-sm">
                   {input.image_url && (
                     <img src={input.image_url} alt={input.skin_name} className="w-10 h-7 object-contain flex-shrink-0" />
                   )}
@@ -521,7 +568,7 @@ function TradeupCard({
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-xs text-zinc-400">
-                  {workingCombo.float_source === 'exact' ? 'exact floats' : 'wear assumptions'}
+                  {exact ? 'exact floats' : workingCombo.float_fit === 'any' ? 'any float works' : 'suggested floats'}
                 </span>
                 <svg
                   className={`w-4 h-4 text-zinc-500 transition-transform ${floatEditorOpen ? 'rotate-180' : ''}`}
@@ -538,7 +585,8 @@ function TradeupCard({
             {floatEditorOpen && (
             <div className="px-3 pb-3">
             <p className="text-xs text-zinc-400 mb-3">
-              Edit the exact float for each slot and recalculate the contract with true float-level math.
+              Enter the real float of each item you plan to use and recalculate. The float decides the wear, so an item
+              is priced at the lowest listing of the wear its float falls in.
             </p>
 
             <div className="grid gap-2 md:grid-cols-2">
@@ -551,13 +599,13 @@ function TradeupCard({
                   <div className="min-w-0 flex-1">
                     <div className="text-sm text-zinc-300 truncate">{withStatTrak(input.skin_name, isStatTrak)}</div>
                     <div className="text-xs text-zinc-400">
-                      {input.is_souvenir ? 'Souvenir · ' : ''}{input.wear_name} · range {input.min_float.toFixed(2)}-{input.max_float.toFixed(2)}
+                      {input.is_souvenir ? 'Souvenir · ' : ''}{input.wear_name} · floats {input.wear_float_range[0].toFixed(2)}-{input.wear_float_range[1].toFixed(2)}
                     </div>
                   </div>
                   <input
                     type="number"
-                    min={0}
-                    max={1}
+                    min={input.min_float}
+                    max={input.max_float}
                     step="0.00001"
                     value={floatInputs[index] ?? ''}
                     onChange={(e) => updateFloatValue(index, e.target.value)}
@@ -590,7 +638,7 @@ function TradeupCard({
               </div>
             )}
 
-            {!workingCombo.target_matches_requested_wear && (
+            {exact && !lands && (
               <div className="mt-3 text-sm text-amber-400">
                 These exact floats do not land the target skin in {targetWear}. Target skin chance remains {(workingCombo.target_skin_probability * 100).toFixed(1)}%, but requested wear chance is 0%.
               </div>
@@ -603,11 +651,12 @@ function TradeupCard({
             <h4 className="text-xs uppercase tracking-wider text-zinc-400 mb-2">
               Possible Outcomes
               <span className="ml-2 normal-case tracking-normal text-zinc-400">
-                (avg normalized float: {workingCombo.avg_normalized_float.toFixed(4)})
+                (at avg normalized float {workingCombo.avg_normalized_float.toFixed(4)})
               </span>
             </h4>
             <p className="text-xs text-zinc-500 mb-2">
-              Prices are the average of the last 5 Steam sales at the estimated wear, not current listings.
+              Prices are the average of the last 5 Steam sales at the wear shown, not current listings.
+              {evVaries && ` EV runs from ${formatSigned(workingCombo.ev_range_cents[0])} to ${formatSigned(workingCombo.ev_range_cents[1])} depending on the input floats, because some outcomes change wear.`}
             </p>
             {evSkewed && (
               <p className="text-xs text-red-400 mb-2">
@@ -616,58 +665,89 @@ function TradeupCard({
             )}
             <div className="space-y-1.5">
               {workingCombo.all_outcomes.map((outcome, index) => (
-                <div key={`${outcome.skin_id}:${index}`} className="flex items-center gap-3 text-sm">
-                  {outcome.image_url && (
-                    <img src={outcome.image_url} alt={outcome.skin_name} className="w-10 h-7 object-contain flex-shrink-0" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className={outcome.is_target ? 'text-green-400 font-medium' : 'text-zinc-300'}>
-                        <ScrambleText text={withStatTrak(outcome.skin_name, isStatTrak)} scrambleSpeed={20} delay={400}/>
-                      </span>
-                      <span className="text-[10px] text-zinc-300 px-1.5 py-0.5 rounded bg-zinc-700/50">
-                        <ScrambleText text={outcome.expected_wear} scrambleSpeed={20} delay={400}/>
-                      </span>
-                      {outcome.is_target && (
-                        <span className="text-[10px] uppercase bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">
-                          target
-                        </span>
-                      )}
-                      {!outcome.has_active_listing && (
-                        <span className="text-[10px] uppercase bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded">
-                          no listing
-                        </span>
-                      )}
-                      {outcome.price_cents == null && (
-                        <span className="text-[10px] uppercase bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded">
-                          no sales data
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <div className="flex-1 h-1.5 bg-zinc-700 rounded-full overflow-hidden max-w-32">
-                        <div
-                          className={`h-full rounded-full ${outcome.is_target ? 'bg-green-500' : 'bg-zinc-500'}`}
-                          style={{ width: `${outcome.probability * 100}%` }}
-                        />
-                      </div>
-                      <span className="text-xs text-zinc-400 w-12 text-right">
-                        <ScrambleText text={`${(outcome.probability * 100).toFixed(1)}%`} scrambleSpeed={20} delay={400}/>
-                      </span>
-                      <span className="text-xs text-zinc-400 w-16 text-right">
-                        {outcome.expected_float.toFixed(4)}
-                      </span>
-                    </div>
-                  </div>
-                  <span className="ml-auto flex-shrink-0 text-zinc-400">
-                    <ScrambleText text={formatPrice(outcome.price_cents)} scrambleSpeed={20} delay={400}/>
-                  </span>
-                </div>
+                <OutcomeRow key={`${outcome.skin_id}:${index}`} outcome={outcome} isStatTrak={isStatTrak} />
               ))}
             </div>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function OutcomeRow({ outcome, isStatTrak }: { outcome: TradeupOutcomeEvaluation; isStatTrak: boolean }) {
+  const otherWears = outcome.possible_wears.filter((wear) => wear !== outcome.expected_wear);
+  const otherUnlisted = outcome.unlisted_wears.filter((wear) => wear !== outcome.expected_wear);
+  const sale = outcome.price_cents != null ? saleAge(outcome.last_sale_at) : null;
+
+  return (
+    <div className="flex items-center gap-3 text-sm">
+      {outcome.image_url && (
+        <img src={outcome.image_url} alt={outcome.skin_name} className="w-10 h-7 object-contain flex-shrink-0" />
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className={outcome.is_target ? 'text-green-400 font-medium' : 'text-zinc-300'}>
+            <ScrambleText text={withStatTrak(outcome.skin_name, isStatTrak)} scrambleSpeed={20} delay={400}/>
+          </span>
+          <span className="text-[10px] text-zinc-300 px-1.5 py-0.5 rounded bg-zinc-700/50">
+            <ScrambleText text={outcome.expected_wear} scrambleSpeed={20} delay={400}/>
+          </span>
+          {otherWears.length > 0 && (
+            <span
+              className="text-[10px] text-amber-300 px-1.5 py-0.5 rounded bg-amber-500/10"
+              title="This outcome changes wear within the floats that still land your request, so its price depends on the input floats."
+            >
+              or {otherWears.join(' / ')} depending on floats
+            </span>
+          )}
+          {outcome.is_target && (
+            <span className="text-[10px] uppercase bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">
+              target
+            </span>
+          )}
+          {!outcome.has_active_listing && (
+            <span className="text-[10px] uppercase bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded">
+              no listing
+            </span>
+          )}
+          {otherUnlisted.length > 0 && (
+            <span className="text-[10px] uppercase bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded">
+              no listing in {otherUnlisted.join(' / ')}
+            </span>
+          )}
+          {outcome.price_cents == null && (
+            <span className="text-[10px] uppercase bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded">
+              no sales data
+            </span>
+          )}
+          {sale && sale.days > OLD_SALE_DAYS && (
+            <span
+              className="text-[10px] uppercase bg-amber-500/10 text-amber-300 px-1.5 py-0.5 rounded"
+              title="The most recent recorded sale is old, so this price may not reflect today's market."
+            >
+              last sold {sale.label}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 mt-0.5">
+          <div className="flex-1 h-1.5 bg-zinc-700 rounded-full overflow-hidden max-w-32">
+            <div
+              className={`h-full rounded-full ${outcome.is_target ? 'bg-green-500' : 'bg-zinc-500'}`}
+              style={{ width: `${outcome.probability * 100}%` }}
+            />
+          </div>
+          <span className="text-xs text-zinc-400 w-12 text-right">
+            <ScrambleText text={`${(outcome.probability * 100).toFixed(1)}%`} scrambleSpeed={20} delay={400}/>
+          </span>
+          <span className="text-xs text-zinc-400 w-16 text-right">
+            {outcome.expected_wear === 'Vanilla' ? '' : outcome.expected_float.toFixed(4)}
+          </span>
+        </div>
+      </div>
+      <span className="ml-auto flex-shrink-0 text-zinc-400">
+        <ScrambleText text={formatPrice(outcome.price_cents)} scrambleSpeed={20} delay={400}/>
+      </span>
     </div>
   );
 }

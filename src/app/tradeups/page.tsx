@@ -1,7 +1,10 @@
 import Link from 'next/link';
 import SearchBar from '@/components/SearchBar';
-import { getTradeupLeaderboard, type TradeupLeaderboardEntry } from '@/lib/tradeup-leaderboard';
+import { type DataStatus, getDataStatus } from '@/lib/market/status';
+import { getTradeupLeaderboard } from '@/lib/tradeup';
+import type { TradeupLeaderboardEntry } from '@/lib/tradeup/types';
 import CostFilterForm from '@/components/CostFilterForm';
+import DataStatusNotice from '@/components/DataStatusNotice';
 
 export const metadata = {
   title: 'Best Tradeups | SkinFast',
@@ -20,6 +23,10 @@ export const metadata = {
 function formatPrice(cents: number | null): string {
   if (cents == null) return '-';
   return `$${(cents / 100).toFixed(2)}`;
+}
+
+function formatFloatRange(range: [number, number]): string {
+  return `${range[0].toFixed(3)}\u2013${range[1].toFixed(3)}`;
 }
 
 function parseCostParam(value: string | string[] | undefined): number | undefined {
@@ -41,11 +48,14 @@ export default async function TradeupsPage({
   const minCostCents = parseCostParam(params.minCost);
   const maxCostCents = parseCostParam(params.maxCost);
 
-  const leaderboard = await getTradeupLeaderboard({
-    minCostCents,
-    maxCostCents,
-    limit: 40,
-  });
+  const [leaderboard, dataStatus] = await Promise.all([
+    getTradeupLeaderboard({ minCostCents, maxCostCents, limit: 40 }),
+    // The page must still render if the status query fails; the notice then says so.
+    getDataStatus().catch((error): DataStatus | null => {
+      console.error('[tradeups] data status unavailable', error);
+      return null;
+    }),
+  ]);
 
   return (
     <div className="flex flex-1 flex-col items-center gap-8 px-4 py-8">
@@ -65,7 +75,8 @@ export default async function TradeupsPage({
                 Ranked by expected value using cached Steam Community Market prices. This leaderboard evaluates
                 identical-input contracts: 10x of the same skin for standard tradeups, or 5x for knife and glove
                 tradeups. Souvenir inputs are included (their souvenir attributes are stripped and the output is
-                always a normal item). Output estimates use the selected input wear.
+                always a normal item). A listing shows a wear, not a float, so each entry states the input floats
+                its figures hold for: either any float of that wear, or a narrower range within it.
               </p>
             </div>
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-4 py-3 text-sm text-zinc-400">
@@ -82,15 +93,20 @@ export default async function TradeupsPage({
           <div className="rounded-xl border border-zinc-700 bg-zinc-950/70 px-4 py-3 text-xs leading-5 text-zinc-400">
             <span className="font-medium text-zinc-300">Pricing disclaimer:</span> input prices are the lowest active Steam
             Community Market listing. Outcome prices are the average of the last 5 recorded Steam sales for the wear each
-            outcome is expected to land in, not a live listing. Only contracts where every input and every possible outcome
-            currently has an active Steam listing are shown; anything unlisted is excluded rather than estimated. EV and ROI
-            are estimates before Steam fees.
+            outcome lands in, not a live listing. Only contracts where every input and every possible outcome
+            currently has an active Steam listing are shown; anything unlisted is excluded rather than estimated. Where an
+            entry needs a float range narrower than its wear, the lowest listing may not qualify and items that do can cost
+            more. EV and ROI are estimates before Steam fees.
           </div>
+
+          <DataStatusNotice status={dataStatus} />
         </section>
 
         {leaderboard.entries.length === 0 ? (
           <div className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-8 text-sm text-zinc-400">
-            No tradeups matched this contract-cost range.
+            {minCostCents == null && maxCostCents == null
+              ? 'No contract currently has an active listing and a recorded sale price for every possible outcome.'
+              : 'No tradeups matched this contract-cost range.'}
           </div>
         ) : (
           <div className="space-y-4">
@@ -158,6 +174,11 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                 <div className="text-sm text-zinc-400">
                   {entry.outcome_count} possible outcomes
                 </div>
+                <div className={`text-sm ${entry.input.any_float ? 'text-green-400/90' : 'text-amber-400'}`}>
+                  {entry.input.any_float
+                    ? `Any ${entry.input.wear_name} float works`
+                    : `Needs an average input float of ${formatFloatRange(entry.input.required_float_range)}`}
+                </div>
               </div>
             </div>
           </div>
@@ -188,7 +209,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
               <div>
                 <div className="text-xs uppercase tracking-[0.24em] text-zinc-400">Top outcomes</div>
                 <div className="text-sm text-zinc-400">
-                  Estimated from input wear.
+                  {entry.input.any_float ? 'Same for every float of the input wear.' : 'For the input float range shown.'}
                 </div>
               </div>
               <div className="text-xs text-zinc-500">
@@ -216,7 +237,7 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                         {outcome.skin_name}
                       </div>
                       <div className="text-xs text-zinc-400">
-                        Est. {outcome.expected_wear} / {(outcome.probability * 100).toFixed(1)}%
+                        {outcome.expected_wear} / {(outcome.probability * 100).toFixed(1)}%
                       </div>
                       <div className="mt-2 text-sm text-zinc-300">
                         {formatPrice(outcome.price_cents)}
@@ -240,9 +261,18 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                 <span className="text-zinc-300">{entry.input.is_souvenir ? 'Souvenir ' : ''}{entry.input.wear_name}</span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3">
-                <span>Estimated avg float</span>
-                <span className="text-zinc-300">{entry.input.expected_float.toFixed(5)}</span>
+                <span>{entry.input.any_float ? 'Input floats' : 'Required avg float'}</span>
+                <span className={entry.input.any_float ? 'text-zinc-300' : 'text-amber-400'}>
+                  {formatFloatRange(entry.input.required_float_range)}
+                  {entry.input.any_float ? ' (any)' : ''}
+                </span>
               </div>
+              {!entry.input.any_float && (
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <span>{entry.input.wear_name} floats</span>
+                  <span className="text-zinc-300">{formatFloatRange(entry.input.wear_float_range)}</span>
+                </div>
+              )}
               <div className="mt-2 flex items-center justify-between gap-3">
                 <span>Contract size</span>
                 <span className="text-zinc-300">{entry.num_inputs} inputs</span>
@@ -281,7 +311,8 @@ function TradeupCard({ entry, rank }: { entry: TradeupLeaderboardEntry; rank: nu
                       {outcome.skin_name}
                     </Link>
                     <div className="text-xs text-zinc-400">
-                      Est. {outcome.expected_wear} / avg float {outcome.expected_float.toFixed(5)} / {(outcome.probability * 100).toFixed(1)}% chance
+                      {outcome.expected_wear}
+                      {outcome.expected_wear === 'Vanilla' ? '' : ` / float ${formatFloatRange(outcome.float_range)}`} / {(outcome.probability * 100).toFixed(1)}% chance
                     </div>
                   </div>
                   <span className="text-zinc-300">

@@ -1,4 +1,5 @@
 import postgres from 'postgres';
+import { RUNTIME_POOL_OPTIONS, getRuntimeDatabaseUrl } from './db-config';
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -12,15 +13,19 @@ if (!connectionString) {
 // and a saturated pool makes every query fail with EMAXCONNSESSION, which takes down
 // search, skin pages and the tradeup leaderboard at once.
 //
-// DATABASE_URL should point at the transaction-mode pooler (port 6543), which is the
-// Supabase recommendation for serverless. Transaction mode does not support named
-// prepared statements, hence `prepare: false` (harmless in session mode too).
-const sql = postgres(connectionString, {
-  max: 3,
-  idle_timeout: 10,
-  max_lifetime: 60 * 10,
-  connect_timeout: 10,
-  prepare: false,
-});
+// Normalize legacy shared-pooler URLs to transaction mode (port 6543); lowering
+// `max` alone still lets separate serverless instances exhaust the session pool.
+// Direct database URLs and other providers keep their configured endpoint.
+const runtimeUrl = getRuntimeDatabaseUrl(connectionString);
+const databaseGlobal = globalThis as typeof globalThis & {
+  skinfastDatabase?: { url: string; sql: ReturnType<typeof postgres> };
+};
+
+const sql = databaseGlobal.skinfastDatabase?.url === runtimeUrl
+  ? databaseGlobal.skinfastDatabase.sql
+  : postgres(runtimeUrl, { ...RUNTIME_POOL_OPTIONS });
+
+// Reuse the client when development hot reloads re-evaluate this module.
+databaseGlobal.skinfastDatabase = { url: runtimeUrl, sql };
 
 export default sql;

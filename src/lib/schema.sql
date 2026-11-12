@@ -55,7 +55,13 @@ CREATE TABLE IF NOT EXISTS crate_skins (
   PRIMARY KEY (crate_id, skin_id)
 );
 
--- Cached Steam market prices
+-- Listing state of each tracked variant, from Steam's market search.
+--   lowest_price_cents  lowest active listing in USD cents; NULL = confirmed to
+--                       have no active listing
+--   sell_listings       number of active listings
+--   updated_at          when that was last confirmed
+-- median_price_cents and volume are no longer written or read (they came from
+-- the retired priceoverview scraper).
 CREATE TABLE IF NOT EXISTS prices (
   market_hash_name TEXT PRIMARY KEY,
   lowest_price_cents INTEGER,
@@ -65,7 +71,14 @@ CREATE TABLE IF NOT EXISTS prices (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Average of the last 5 sold prices per variant, parsed from the market listing page's line1 history.
+-- Average of the last 5 Steam sales per variant, from the listing page's sale
+-- history. Trade-up outcomes are valued at this figure.
+--   avg_last5_cents  USD cents; NULL when there is no sale to average
+--   sample_count     sales in the average; 0 = Steam has none on record;
+--                    NULL = never read successfully (rows written before the
+--                    2026-11 rebuild are all in this state)
+--   last_sale_at     time of the most recent sale (ISO 8601)
+--   updated_at       last successful read; a failed read never touches the row
 CREATE TABLE IF NOT EXISTS last_sold_avg (
   market_hash_name TEXT PRIMARY KEY REFERENCES skin_variants(market_hash_name),
   avg_last5_cents INTEGER,
@@ -74,7 +87,8 @@ CREATE TABLE IF NOT EXISTS last_sold_avg (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Scraper state for resume capability
+-- Key/value state for the background jobs: scan progress (listings:*), locks
+-- (lock:*), one health record per job (job:*), and Steam currency rates (fx:*).
 CREATE TABLE IF NOT EXISTS scrape_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

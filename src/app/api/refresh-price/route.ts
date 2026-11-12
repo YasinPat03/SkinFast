@@ -1,22 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { refreshSkinPrices, type SkinRefreshResult } from '@/lib/prices';
+import { type SkinRefreshResult, refreshSkin } from '@/lib/market/skin-refresh';
 
-// Up to 6 Steam search pages at ~3 s spacing, plus DB round trips.
-export const maxDuration = 60;
+// A refresh is a few search pages a few seconds apart plus one listing page
+// that can take 25 seconds to download.
+export const maxDuration = 120;
 
-// Best-effort per-instance guard: a page reloaded in a loop on a rate-limited
-// skin must not stack Steam requests. Concurrent callers for the same skin
-// share one in-flight promise; callers within the cooldown get the last
-// result back unchanged. Serverless instances are recycled, so the client
-// keeps its own 5-minute sessionStorage guard as well.
-const ATTEMPT_COOLDOWN_MS = 60_000;
-const MAX_TRACKED_ATTEMPTS = 500;
-const recentAttempts = new Map<string, { at: number; result: Promise<SkinRefreshResult> }>();
+// Best-effort guard per server instance: a page reloaded in a loop must not
+// stack Steam requests. Concurrent callers for one skin share one in-flight
+// refresh, and callers within the cooldown get the last result back. Instances
+// are recycled, so the browser keeps its own guard as well.
+const COOLDOWN_MS = 60_000;
+const MAX_TRACKED = 500;
+const recent = new Map<string, { at: number; result: Promise<SkinRefreshResult> }>();
 
-function pruneAttempts(now: number): void {
-  if (recentAttempts.size < MAX_TRACKED_ATTEMPTS) return;
-  for (const [id, entry] of recentAttempts) {
-    if (now - entry.at >= ATTEMPT_COOLDOWN_MS) recentAttempts.delete(id);
+function prune(now: number): void {
+  if (recent.size < MAX_TRACKED) return;
+  for (const [id, entry] of recent) {
+    if (now - entry.at >= COOLDOWN_MS) recent.delete(id);
   }
 }
 
@@ -28,32 +28,28 @@ export async function POST(request: NextRequest) {
     body = null;
   }
   const skinId = body && typeof body === 'object' ? (body as { skin_id?: unknown }).skin_id : undefined;
-
   if (typeof skinId !== 'string' || skinId.trim() === '') {
     return NextResponse.json({ error: 'skin_id (string) required' }, { status: 400 });
   }
 
   const now = Date.now();
-  let entry = recentAttempts.get(skinId);
-  if (!entry || now - entry.at >= ATTEMPT_COOLDOWN_MS) {
-    pruneAttempts(now);
-    entry = { at: now, result: refreshSkinPrices(skinId) };
-    recentAttempts.set(skinId, entry);
+  let entry = recent.get(skinId);
+  if (!entry || now - entry.at >= COOLDOWN_MS) {
+    prune(now);
+    entry = { at: now, result: refreshSkin(skinId) };
+    recent.set(skinId, entry);
   }
 
   let result: SkinRefreshResult;
   try {
     result = await entry.result;
-  } catch (err) {
-    // refreshSkinPrices only throws if the initial DB lookups fail; don't cache that.
-    recentAttempts.delete(skinId);
-    console.warn(`refresh-price ${skinId} failed: ${err}`);
+  } catch (error) {
+    // Only a database failure gets here; do not hand it to the next caller.
+    recent.delete(skinId);
+    console.warn(`[refresh-price] ${skinId} failed: ${error}`);
     return NextResponse.json({ error: 'Refresh failed' }, { status: 500 });
   }
 
-  if (result.status === 'not_found') {
-    return NextResponse.json({ error: 'Skin not found' }, { status: 404 });
-  }
-
+  if (result.status === 'not_found') return NextResponse.json({ error: 'Skin not found' }, { status: 404 });
   return NextResponse.json(result);
 }

@@ -1,8 +1,11 @@
 import type { Metadata } from 'next';
 import sql from '@/lib/db';
+import { isListingStale } from '@/lib/market/freshness';
+import { type DataStatus, getDataStatus } from '@/lib/market/status';
+import { type SkinRecord, type SkinVariantQuote, loadSkinDetail } from '@/lib/skins';
 import { getTradeupEligibility } from '@/lib/tradeup';
-import { isPriceStale } from '@/lib/prices';
 import { notFound } from 'next/navigation';
+import DataStatusNotice from '@/components/DataStatusNotice';
 import SearchBar from '@/components/SearchBar';
 import TradeupResults from '@/components/TradeupResults';
 import PriceRefreshButton from '@/components/PriceRefreshButton';
@@ -22,40 +25,8 @@ const RARITY_COLORS: Record<string, string> = {
 
 const WEAR_ORDER = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred', 'Vanilla'];
 
-interface SkinRow {
-  id: string;
-  name: string;
-  weapon_name: string;
-  pattern_name: string;
-  rarity_id: string;
-  rarity_name: string;
-  min_float: number;
-  max_float: number;
-  has_stattrak: boolean;
-  has_souvenir: boolean;
-  image_url: string | null;
-}
-
-interface VariantRow {
-  market_hash_name: string;
-  wear_name: string;
-  is_stattrak: boolean;
-  is_souvenir: boolean;
-  lowest_price_cents: number | null;
-  median_price_cents: number | null;
-  last_sold_avg_cents: number | null;
-  last_sold_sample_count: number | null;
-  last_sale_at: string | null;
-  volume: number | null;
-  sell_listings: number | null;
-  updated_at: string | null;
-}
-
-interface CollectionRow {
-  id: string;
-  name: string;
-  image_url: string | null;
-}
+type SkinRow = SkinRecord;
+type VariantRow = SkinVariantQuote;
 
 function formatPrice(cents: number | null): string {
   if (cents == null) return '-';
@@ -76,9 +47,9 @@ function formatSaleDate(iso: string | null): string | null {
   });
 }
 
-function timeAgo(dateStr: string | null): string {
-  if (!dateStr) return 'Never';
-  const diff = Date.now() - new Date(dateStr).getTime();
+function timeAgo(date: Date | string | null): string {
+  if (!date) return 'Never';
+  const diff = Date.now() - new Date(date).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return 'Just now';
   if (mins < 60) return `${mins}m ago`;
@@ -121,34 +92,9 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
 export default async function SkinDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
-  const skinRows = await sql<SkinRow[]>`SELECT * FROM skins WHERE id = ${id}`;
-  const skin = skinRows[0];
-  if (!skin) notFound();
-
-  const variants = await sql<VariantRow[]>`
-    SELECT
-      sv.market_hash_name, sv.wear_name, sv.is_stattrak, sv.is_souvenir,
-      p.lowest_price_cents, p.median_price_cents, p.volume, p.sell_listings, p.updated_at,
-      l.avg_last5_cents AS last_sold_avg_cents, l.sample_count AS last_sold_sample_count, l.last_sale_at
-    FROM skin_variants sv
-    LEFT JOIN prices p ON sv.market_hash_name = p.market_hash_name
-    LEFT JOIN last_sold_avg l ON sv.market_hash_name = l.market_hash_name
-    WHERE sv.skin_id = ${id}
-  `;
-
-  const collections = await sql<CollectionRow[]>`
-    SELECT c.id, c.name, c.image_url
-    FROM collections c
-    JOIN collection_skins cs ON c.id = cs.collection_id
-    WHERE cs.skin_id = ${id}
-  `;
-
-  const crates = await sql<CollectionRow[]>`
-    SELECT cr.id, cr.name, cr.image_url
-    FROM crates cr
-    JOIN crate_skins cs ON cr.id = cs.crate_id
-    WHERE cs.skin_id = ${id}
-  `;
+  const detail = await loadSkinDetail(id);
+  if (!detail) notFound();
+  const { skin, variants, collections, crates } = detail;
 
   // Group variants by type: normal, stattrak, souvenir
   const variantTypes = {
@@ -166,21 +112,23 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
     return list.find((v) => v.wear_name === wear);
   }
 
-  // Find the earliest updated_at for the "last updated" display
-  const allUpdatedAts = variants.map((v) => v.updated_at).filter(Boolean) as string[];
-  const oldestUpdate = allUpdatedAts.length > 0
-    ? allUpdatedAts.reduce((a, b) => (a < b ? a : b))
-    : null;
+  // The oldest listing check among the variants, for the "last updated" display
+  const updateTimes = variants.filter((v) => v.updated_at != null).map((v) => new Date(v.updated_at!).getTime());
+  const oldestUpdate = updateTimes.length > 0 ? new Date(Math.min(...updateTimes)) : null;
 
   const rarityColor = RARITY_COLORS[skin.rarity_id] ?? '#888';
 
-  // Check if any prices are stale (>6 hours old; no-listing rows use a 24h window)
-  const hasStalePrice = variants.some((v) =>
-    isPriceStale(v.updated_at, 6, v.lowest_price_cents, v.median_price_cents)
-  );
+  // Refresh on view when any variant's listing state is old (6h when listed, 24h when not)
+  const hasStalePrice = variants.some((v) => isListingStale(v.updated_at, v.lowest_price_cents));
 
-  // Get tradeup eligibility
-  const tradeup = await getTradeupEligibility(id);
+  const [tradeup, dataStatus] = await Promise.all([
+    getTradeupEligibility(id),
+    // The page must still render if the status query fails; the notice then says so.
+    getDataStatus().catch((error): DataStatus | null => {
+      console.error('[skin page] data status unavailable', error);
+      return null;
+    }),
+  ]);
 
   // Get available wears for the non-stattrak, non-souvenir variants
   const availableWears = [...new Set(
@@ -372,6 +320,7 @@ export default async function SkinDetailPage({ params }: { params: Promise<{ id:
           tradeup={tradeup}
           availableWears={availableWears}
           listedWears={listedWears}
+          dataStatus={dataStatus}
         />
       </div>
     </div>
@@ -386,8 +335,11 @@ function PriceCell({
   tooltipPlacement?: 'top' | 'bottom';
 }) {
   const hasListing = variant.lowest_price_cents != null;
-  const lastSoldCents = variant.last_sold_avg_cents ?? variant.median_price_cents;
+  const lastSoldCents = variant.last_sold_avg_cents;
   const hasLastSold = lastSoldCents != null;
+  const sampleCount = variant.last_sold_sample_count ?? 0;
+  const lastSoldLabel = sampleCount > 1 ? `Avg of last ${sampleCount} sales` : 'Last sold';
+  const saleDate = formatSaleDate(variant.last_sale_at);
 
   return (
     <div>
@@ -404,6 +356,7 @@ function PriceCell({
             fallbackClassName="text-orange-400"
             nullClassName="text-zinc-400"
             nullLabel="-"
+            tooltipText={`No active listings. Showing the ${sampleCount > 1 ? `average of the last ${sampleCount} sales` : 'last sold price'}.`}
             tooltipPlacement={tooltipPlacement}
           />
         </div>
@@ -413,36 +366,34 @@ function PriceCell({
       <div className="text-xs mt-0.5 space-x-1">
         {hasLastSold && !hasListing && (
           <span className="text-zinc-400">
-            {variant.last_sold_avg_cents != null && (variant.last_sold_sample_count ?? 0) > 1
-              ? `Avg of last ${variant.last_sold_sample_count} sales`
-              : 'Last sold'}
-            {formatSaleDate(variant.last_sale_at) ? ` · ${formatSaleDate(variant.last_sale_at)}` : ''}
+            {lastSoldLabel}{saleDate ? ` · ${saleDate}` : ''}
           </span>
         )}
         {hasLastSold && hasListing && (
-          <span className="text-zinc-400">Last sold: <ScrambleText text={formatPrice(lastSoldCents)} scrambleSpeed={20}delay={400}/></span>
-        )}
-        {!hasLastSold && hasListing && variant.sell_listings != null && (
-          <span className="text-zinc-400">
-            {variant.sell_listings} listed{variant.volume != null ? ` / ${variant.volume} sold` : ''}
+          <span className="text-zinc-400" title={saleDate ? `${lastSoldLabel}, most recent ${saleDate}` : lastSoldLabel}>
+            Last sold: <ScrambleText text={formatPrice(lastSoldCents)} scrambleSpeed={20}delay={400}/>
           </span>
         )}
-        {hasLastSold && hasListing && variant.sell_listings != null && (
+        {hasListing && variant.sell_listings != null && variant.sell_listings > 0 && (
           <span className="text-zinc-400">
-            / {variant.sell_listings} listed
+            {hasLastSold ? '/ ' : ''}{variant.sell_listings} listed
           </span>
+        )}
+        {!hasListing && !hasLastSold && variant.updated_at != null && (
+          <span className="text-zinc-500">No listings</span>
         )}
       </div>
     </div>
   );
 }
 
-function TradeupSection({ skinId, skin, tradeup, availableWears, listedWears }: {
+function TradeupSection({ skinId, skin, tradeup, availableWears, listedWears, dataStatus }: {
   skinId: string;
   skin: SkinRow;
   tradeup: Awaited<ReturnType<typeof getTradeupEligibility>>;
   availableWears: string[];
   listedWears: { normal: string[]; stattrak: string[] };
+  dataStatus: DataStatus | null;
 }) {
   return (
     <div className="mt-8 border-t border-zinc-700 pt-8">
@@ -531,6 +482,8 @@ function TradeupSection({ skinId, skin, tradeup, availableWears, listedWears }: 
               ))}
             </div>
           )}
+
+          <DataStatusNotice status={dataStatus} className="mb-4" />
 
           {/* Best tradeup finder */}
           <TradeupResults

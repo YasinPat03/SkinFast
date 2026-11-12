@@ -1,5 +1,11 @@
 # Handoff: fix the fake "Prices updated" message and the stalled price scraper
 
+> **Superseded (2026-11-11).** The scraping and trade-up code was rebuilt after this was written.
+> The files named below (`src/lib/prices.ts`, `src/lib/scraper.ts`, `src/lib/tradeup*.ts`) no longer
+> exist; their replacements live in `src/lib/steam/`, `src/lib/market/` and `src/lib/tradeup/`.
+> The Steam observations in section 3 are also dated: `priceoverview` works again at times, and the
+> listing page now embeds its data in a `valve-ssr-data` JSON script. Kept for history only.
+
 Written 2026-09-10 after a read-only investigation. No code was changed. Everything
 below was verified against the live database, the production site, and Steam.
 
