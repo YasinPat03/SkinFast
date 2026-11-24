@@ -1,6 +1,11 @@
 import type { MetadataRoute } from 'next';
 import sql from '@/lib/db';
 
+// Built per request, not at build time: prerendering it made every deploy
+// depend on the database being reachable from the build machine, and a bad
+// DATABASE_URL on Vercel failed every production deploy from Nov 2026 on.
+export const dynamic = 'force-dynamic';
+
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const baseUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://skinfast.app';
 
