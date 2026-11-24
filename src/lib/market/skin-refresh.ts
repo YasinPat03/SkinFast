@@ -39,6 +39,8 @@ export interface SkinRefreshResult {
   complete: boolean;
   // Anything that did not go as planned, in plain words.
   notes: string[];
+  // Steam answered at least one request with HTTP 429.
+  rate_limited: boolean;
 }
 
 async function searchSkin(query: string, result: SkinRefreshResult): Promise<SearchItem[]> {
@@ -61,6 +63,7 @@ async function searchSkin(query: string, result: SkinRefreshResult): Promise<Sea
   } catch (error) {
     if (error instanceof SteamRateLimitError) {
       result.status = 'rate_limited';
+      result.rate_limited = true;
       result.notes.push('Steam rate-limited the price search.');
     } else {
       result.status = 'error';
@@ -80,6 +83,7 @@ export async function refreshSkin(skinId: string): Promise<SkinRefreshResult> {
     last_sold_updated: [],
     complete: false,
     notes: [],
+    rate_limited: false,
   };
 
   const item = await loadMarketItem(skinId);
@@ -137,6 +141,7 @@ export async function refreshSkin(skinId: string): Promise<SkinRefreshResult> {
       }
     } catch (error) {
       if (error instanceof SteamRateLimitError) {
+        result.rate_limited = true;
         result.notes.push('Steam rate-limited the sale history request.');
         if (result.updated.length === 0) result.status = 'rate_limited';
       } else {

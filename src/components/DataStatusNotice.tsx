@@ -13,15 +13,20 @@ export default function DataStatusNotice({ status, className = '' }: { status: D
   if (!status.listings_stale && !status.sales_incomplete) return null;
 
   const coverage = Math.round(status.sales_coverage * 100);
-  const fresh = Math.round(status.listings_fresh_share * 100);
+  // Floor, so a handful of old prices never reads as "100% were confirmed".
+  const fresh = Math.floor(status.listings_fresh_share * 100);
+  const stale = status.listings.listed_older_than_24h;
 
   return (
     <div className={`rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-400 space-y-1 ${className}`}>
       {status.listings_stale && (
         <p>
-          <span className="font-medium">Many listing prices are out of date.</span>{' '}
-          Only {fresh}% of listing prices were confirmed against Steam in the last 24 hours, so input costs shown may
-          no longer match what is listed.
+          <span className="font-medium">
+            {fresh < 80 ? 'Many listing prices are out of date.' : 'Some listing prices are more than a day old.'}
+          </span>{' '}
+          {stale.toLocaleString('en-US')} listing {stale === 1 ? 'price was' : 'prices were'} not confirmed against
+          Steam in the last 24 hours ({fresh}% of listed items were), so input costs shown may no longer match what is
+          listed.
         </p>
       )}
       {status.sales_incomplete && (

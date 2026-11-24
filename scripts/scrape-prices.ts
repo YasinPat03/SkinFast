@@ -1,6 +1,6 @@
 /**
  * Bulk listing-price scan from the command line (the same code the
- * /api/cron/scrape-prices route runs in slices).
+ * /api/cron/scrape-steam cron runs in slices).
  *
  *   npx tsx scripts/scrape-prices.ts                 # continue the current pass to its end
  *   npx tsx scripts/scrape-prices.ts --max-pages 50  # stop after 50 pages (~500 items)

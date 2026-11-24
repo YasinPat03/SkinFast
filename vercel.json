@@ -1,11 +1,7 @@
 {
   "crons": [
     {
-      "path": "/api/cron/scrape-prices",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/cron/scrape-sales",
+      "path": "/api/cron/scrape-steam",
       "schedule": "*/5 * * * *"
     },
     {

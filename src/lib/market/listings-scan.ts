@@ -28,7 +28,6 @@ export const LISTINGS_STATE_KEYS = KEY;
 
 // Time one more page may need (request spacing, a retry, the DB write).
 const PAGE_RESERVE_MS = 30_000;
-const RATE_LIMIT_RETRY_MS = 15_000;
 const TRANSIENT_RETRY_MS = 5_000;
 // An empty page before the end of the list is retried on later runs; after
 // this many runs stuck on the same offset the scan steps past it.
@@ -58,14 +57,16 @@ export interface ListingScanResult {
   error: string | null;
 }
 
-// One retry for things that usually pass on a second attempt: a 429 (after a
-// pause), `success: false`, or a 5xx. A second failure ends the run.
+// One retry for things that usually pass on a second attempt: `success: false`
+// or a 5xx. A second failure ends the run. A 429 is not retried: it ends the
+// run at once, and the caller backs off (see market/steam-guard.ts), because
+// retrying into a rate limit is what turns it into a ban lasting hours.
 async function fetchPageWithRetry(start: number): Promise<SearchPage> {
   try {
     return await fetchSearchPage({ start, typeTags: TRACKED_TYPE_TAGS });
   } catch (error) {
-    if (!(error instanceof SteamError)) throw error;
-    await sleep(error instanceof SteamRateLimitError ? RATE_LIMIT_RETRY_MS : TRANSIENT_RETRY_MS);
+    if (!(error instanceof SteamError) || error instanceof SteamRateLimitError) throw error;
+    await sleep(TRANSIENT_RETRY_MS);
     return fetchSearchPage({ start, typeTags: TRACKED_TYPE_TAGS });
   }
 }

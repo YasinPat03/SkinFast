@@ -5,11 +5,12 @@
 import sql from '../db';
 import { LISTINGS_STATE_KEYS } from './listings-scan';
 import { type JobHealth, getJobHealth, getStates } from './state';
+import { STEAM_GUARD_KEYS } from './steam-guard';
 
-// When less than this share of the listing prices was confirmed in the last 24
-// hours, the pages that use them say so. (A healthy scan confirms all of them
-// every few hours.)
-export const LISTINGS_FRESH_WARN = 0.8;
+// Promise: every listed price was confirmed against Steam within this many
+// hours. A healthy scan re-confirms each one about every 8 hours (see
+// market/scheduler.ts); any listed price older than this makes the pages say so.
+export const LISTINGS_MAX_AGE_HOURS = 24;
 // Below this share of priced outcomes, EV figures are called out as incomplete.
 export const SALES_COVERAGE_WARN = 0.9;
 
@@ -21,10 +22,15 @@ export interface DataStatus {
     newest_update_at: string | null;
     // Listed variants whose price was confirmed in the last 24 hours.
     listed_confirmed_last_24h: number;
+    // Listed variants whose price is older than that (should be 0).
+    listed_older_than_24h: number;
+    oldest_listed_update_at: string | null;
     last_cycle_completed_at: string | null;
     cycle_progress: { offset: number; total: number } | null;
     job: JobHealth;
   };
+  // Set while Steam's rate limit has every server request backing off.
+  steam_cooldown_until: string | null;
   sales: {
     // Variants whose sale history has been read at least once.
     variants_read: number;
@@ -54,11 +60,13 @@ export async function getDataStatus(): Promise<DataStatus> {
   if (cached && cached.expiresAt > Date.now()) return cached.status;
 
   const [listingRows, salesRows, state, listingsJob, salesJob, metadataJob] = await Promise.all([
-    sql<{ tracked: number; listed: number; newest: Date | null; last_24h: number }[]>`
+    sql<{ tracked: number; listed: number; newest: Date | null; oldest_listed: Date | null; last_24h: number }[]>`
       SELECT COUNT(*)::int AS tracked,
              COUNT(*) FILTER (WHERE p.lowest_price_cents > 0)::int AS listed,
              MAX(p.updated_at) AS newest,
-             COUNT(*) FILTER (WHERE p.lowest_price_cents > 0 AND p.updated_at > NOW() - INTERVAL '24 hours')::int AS last_24h
+             MIN(p.updated_at) FILTER (WHERE p.lowest_price_cents > 0) AS oldest_listed,
+             COUNT(*) FILTER (WHERE p.lowest_price_cents > 0
+                                AND p.updated_at > NOW() - (${LISTINGS_MAX_AGE_HOURS} || ' hours')::INTERVAL)::int AS last_24h
       FROM skin_variants sv
       LEFT JOIN prices p ON p.market_hash_name = sv.market_hash_name
     `,
@@ -73,7 +81,7 @@ export async function getDataStatus(): Promise<DataStatus> {
       LEFT JOIN prices p ON p.market_hash_name = sv.market_hash_name
       LEFT JOIN last_sold_avg l ON l.market_hash_name = sv.market_hash_name
     `,
-    getStates([...Object.values(LISTINGS_STATE_KEYS), 'last_metadata_import']),
+    getStates([...Object.values(LISTINGS_STATE_KEYS), STEAM_GUARD_KEYS.until, 'last_metadata_import']),
     getJobHealth('listings'),
     getJobHealth('sales'),
     getJobHealth('metadata'),
@@ -94,10 +102,16 @@ export async function getDataStatus(): Promise<DataStatus> {
       listed_variants: listings.listed,
       newest_update_at: iso(listings.newest),
       listed_confirmed_last_24h: listings.last_24h,
+      listed_older_than_24h: listings.listed - listings.last_24h,
+      oldest_listed_update_at: iso(listings.oldest_listed),
       last_cycle_completed_at: state[LISTINGS_STATE_KEYS.lastCycleCompletedAt] || null,
       cycle_progress: Number.isFinite(offset) && Number.isFinite(total) ? { offset, total } : null,
       job: listingsJob,
     },
+    steam_cooldown_until:
+      state[STEAM_GUARD_KEYS.until] && new Date(state[STEAM_GUARD_KEYS.until]).getTime() > Date.now()
+        ? state[STEAM_GUARD_KEYS.until]
+        : null,
     sales: {
       variants_read: sales.read,
       variants_with_sales: sales.with_sales,
@@ -109,7 +123,7 @@ export async function getDataStatus(): Promise<DataStatus> {
     },
     metadata: { last_import_at: state.last_metadata_import || null, job: metadataJob },
     listings_fresh_share: Math.round(freshShare * 1000) / 1000,
-    listings_stale: freshShare < LISTINGS_FRESH_WARN,
+    listings_stale: listings.listed - listings.last_24h > 0,
     sales_coverage: Math.round(coverage * 1000) / 1000,
     sales_incomplete: coverage < SALES_COVERAGE_WARN,
   };

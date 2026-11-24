@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { type SkinRefreshResult, refreshSkin } from '@/lib/market/skin-refresh';
+import { noteRateLimited, steamCoolingDown } from '@/lib/market/steam-guard';
 
 // A refresh is a few search pages a few seconds apart plus one listing page
 // that can take 25 seconds to download.
@@ -32,11 +33,35 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'skin_id (string) required' }, { status: 400 });
   }
 
+  // Steam rate-limited this deployment recently: send nothing until the shared
+  // back-off ends (the page shows the stored prices with a "rate limited" note).
+  const coolingUntil = await steamCoolingDown();
+  if (coolingUntil) {
+    const result: SkinRefreshResult = {
+      status: 'rate_limited',
+      query: '',
+      requested: [],
+      updated: [],
+      missing: [],
+      last_sold_updated: [],
+      complete: false,
+      notes: [`Steam is rate-limiting this server; refreshes resume after ${coolingUntil.toISOString()}.`],
+      rate_limited: true,
+    };
+    return NextResponse.json(result);
+  }
+
   const now = Date.now();
   let entry = recent.get(skinId);
   if (!entry || now - entry.at >= COOLDOWN_MS) {
     prune(now);
-    entry = { at: now, result: refreshSkin(skinId) };
+    entry = {
+      at: now,
+      result: refreshSkin(skinId).then(async (refreshed) => {
+        if (refreshed.rate_limited) await noteRateLimited();
+        return refreshed;
+      }),
+    };
     recent.set(skinId, entry);
   }
 

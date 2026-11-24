@@ -16,7 +16,8 @@ async function main() {
 
   console.log('Listing prices');
   console.log(`  ${listings.listed_variants} of ${listings.tracked_variants} variants listed; ${listings.listed_confirmed_last_24h} of those confirmed in the last 24h (${(status.listings_fresh_share * 100).toFixed(1)}%)${status.listings_stale ? '  << STALE' : ''}`);
-  console.log(`  newest update ${listings.newest_update_at ?? 'never'}`);
+  console.log(`  ${listings.listed_older_than_24h} listed variants older than 24h (oldest ${listings.oldest_listed_update_at ?? 'n/a'}); newest update ${listings.newest_update_at ?? 'never'}`);
+  console.log(`  Steam cooldown: ${status.steam_cooldown_until ? `backing off until ${status.steam_cooldown_until}` : 'none'}`);
   console.log(`  last full pass ${listings.last_cycle_completed_at ?? 'never'}; current pass at ${listings.cycle_progress ? `${listings.cycle_progress.offset}/${listings.cycle_progress.total}` : 'n/a'}`);
   console.log(`  job: ${job(listings.job)}`);
   console.log('Sale history (last-5-sold averages)');

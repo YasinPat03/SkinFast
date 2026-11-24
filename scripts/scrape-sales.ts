@@ -1,6 +1,6 @@
 /**
  * Sale-history refresh from the command line (the same code the
- * /api/cron/scrape-sales route runs in slices). Reads the last-5-sold average
+ * /api/cron/scrape-steam cron runs in slices). Reads the last-5-sold average
  * for every variant of the skins whose figures are oldest.
  *
  *   npx tsx scripts/scrape-sales.ts                    # one slice (4 minutes)
